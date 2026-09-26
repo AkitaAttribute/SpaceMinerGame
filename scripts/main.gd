@@ -266,8 +266,8 @@ func _build_touch_controls() -> void:
     ui_root.add_child(controls_root)
 
     dpad_root = Control.new()
-    dpad_root.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-    dpad_root.position = Vector2(104.0, -230.0)
+    dpad_root.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+    dpad_root.position = Vector2(-390.0, -230.0)
     dpad_root.size = Vector2(190.0, 190.0)
     dpad_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
     controls_root.add_child(dpad_root)
@@ -768,7 +768,13 @@ func _remove_current_part() -> void:
     placed_parts.erase(key)
 
 func _cursor_world_position() -> Vector3:
-    return Vector3(float(cursor.x), float(cursor.z), float(cursor.y))
+    # Logical coordinates identify cells. World-space grid lines are the cell
+    # boundaries, so the visual/part origin belongs half a cell inward on all axes.
+    return Vector3(
+        float(cursor.x) + 0.5,
+        float(cursor.z) + 0.5,
+        float(cursor.y) + 0.5
+    )
 
 func _update_level_label() -> void:
     if level_label != null:
@@ -785,12 +791,23 @@ func _rebuild_grid() -> void:
     var current: Array[Transform3D] = []
     var above: Array[Transform3D] = []
     var thickness := 0.026
-    var span_x := float(GRID_MAX_X - GRID_MIN_X + 1)
-    var span_depth := float(GRID_MAX_DEPTH - GRID_MIN_DEPTH + 1)
-    var center_x := float(GRID_MIN_X + GRID_MAX_X) * 0.5
-    var center_depth := float(GRID_MIN_DEPTH + GRID_MAX_DEPTH) * 0.5
 
-    for level in range(GRID_MIN_LEVEL, GRID_MAX_LEVEL + 1):
+    # GRID_MIN/MAX values describe usable 1x1x1 cells. The visible line cage
+    # therefore needs one additional boundary on each positive edge.
+    var x_line_min := GRID_MIN_X
+    var x_line_max := GRID_MAX_X + 1
+    var depth_line_min := GRID_MIN_DEPTH
+    var depth_line_max := GRID_MAX_DEPTH + 1
+    var level_line_min := GRID_MIN_LEVEL
+    var level_line_max := GRID_MAX_LEVEL + 1
+
+    var span_x := float(x_line_max - x_line_min)
+    var span_depth := float(depth_line_max - depth_line_min)
+    var center_x := float(x_line_min + x_line_max) * 0.5
+    var center_depth := float(depth_line_min + depth_line_max) * 0.5
+
+    # Horizontal boundary planes.
+    for level in range(level_line_min, level_line_max + 1):
         var target: Array[Transform3D]
         if level == cursor.z:
             target = current
@@ -799,20 +816,22 @@ func _rebuild_grid() -> void:
         else:
             target = above
 
-        for depth in range(GRID_MIN_DEPTH, GRID_MAX_DEPTH + 1):
+        for depth in range(depth_line_min, depth_line_max + 1):
             target.append(_beam_transform(
                 Vector3(center_x, float(level), float(depth)),
                 Vector3(span_x, thickness, thickness)
             ))
-        for x in range(GRID_MIN_X, GRID_MAX_X + 1):
+        for x in range(x_line_min, x_line_max + 1):
             target.append(_beam_transform(
                 Vector3(float(x), float(level), center_depth),
                 Vector3(thickness, thickness, span_depth)
             ))
 
-    for x in range(GRID_MIN_X, GRID_MAX_X + 1):
-        for depth in range(GRID_MIN_DEPTH, GRID_MAX_DEPTH + 1):
-            for level in range(GRID_MIN_LEVEL, GRID_MAX_LEVEL):
+    # Vertical boundary segments are split by logical cell level so the focus
+    # treatment can make the selected level and everything beneath it clearer.
+    for x in range(x_line_min, x_line_max + 1):
+        for depth in range(depth_line_min, depth_line_max + 1):
+            for level in range(GRID_MIN_LEVEL, GRID_MAX_LEVEL + 1):
                 var target: Array[Transform3D]
                 if level == cursor.z:
                     target = current
@@ -826,9 +845,9 @@ func _rebuild_grid() -> void:
                 ))
 
     var accent: Color = palette.get("accent", Color("#4fb7d8"))
-    _add_grid_multimesh(above, Color(accent.r, accent.g, accent.b, 0.055))
+    _add_grid_multimesh(above, Color(accent.r, accent.g, accent.b, 0.045))
     _add_grid_multimesh(below, Color(accent.r, accent.g, accent.b, 0.20))
-    _add_grid_multimesh(current, Color(accent.r, accent.g, accent.b, 0.38))
+    _add_grid_multimesh(current, Color(accent.r, accent.g, accent.b, 0.42))
 
 func _beam_transform(position_value: Vector3, scale_value: Vector3) -> Transform3D:
     return Transform3D(Basis.IDENTITY.scaled(scale_value), position_value)
