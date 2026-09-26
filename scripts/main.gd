@@ -809,10 +809,11 @@ func _refresh_rotation_guide() -> void:
     var reference_local := PartFactory.rotation_reference_normal(selected_part)
     var reference_world := (part_basis * reference_local).normalized()
 
-    # One side of every part is designated as its rotation reference side.
-    # Mark where that side currently points, then simulate the exact same Basis
-    # turn used by the real rotation code for each D-pad action. The colored
-    # face therefore means: "press this button and REF will move here."
+    # One side of every part is designated as its BASE: the broad mounting/
+    # contact side when the geometry has one. Mark where that side currently
+    # points, then simulate the exact same Basis turn used by the real rotation
+    # code for each D-pad action. The colored face therefore means:
+    # "press this button and BASE will move here."
     _add_rotation_reference_marker(
         center,
         cell_min,
@@ -857,7 +858,7 @@ func _add_rotation_reference_marker(
     )
 
     var label := Label3D.new()
-    label.text = "REF"
+    label.text = "BASE"
     label.font_size = 48
     label.pixel_size = 0.005
     label.modulate = Color(1.0, 1.0, 1.0, 0.72)
