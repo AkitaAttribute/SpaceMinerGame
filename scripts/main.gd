@@ -687,16 +687,18 @@ func _set_parts_open(value: bool) -> void:
     _refresh_selection_highlight()
 
 func _perform_dpad(action: StringName) -> void:
-    var grid_direction := _camera_relative_grid_direction(action)
-    if grid_direction == Vector2i.ZERO:
+    if parts_open:
+        # Part rotation is deliberately fixed to construction-grid axes.
+        # Orbiting the camera must not change what any rotation input does.
+        if not PartFactory.is_color_tool(selected_part):
+            _rotate_part_fixed(action)
+            _refresh_ghost()
         return
 
-    if parts_open:
-        # Inside the parts drawer, D-pad/WASD is reserved for part rotation.
-        # Tools with nothing to rotate simply ignore it rather than navigating.
-        if not PartFactory.is_color_tool(selected_part):
-            _rotate_part_in_grid_direction(grid_direction)
-            _refresh_ghost()
+    # Placement/navigation remains camera-relative so left/right/up/down still
+    # follow the player's view while moving the cursor around the ship.
+    var grid_direction := _camera_relative_grid_direction(action)
+    if grid_direction == Vector2i.ZERO:
         return
 
     cursor.x = clampi(cursor.x + grid_direction.x, GRID_MIN_X, GRID_MAX_X)
@@ -746,23 +748,29 @@ func _camera_relative_grid_direction(action: StringName) -> Vector2i:
         return Vector2i(1 if world_direction.x >= 0.0 else -1, 0)
     return Vector2i(0, 1 if world_direction.z >= 0.0 else -1)
 
-func _rotate_part_in_grid_direction(grid_direction: Vector2i) -> void:
-    # Use the same camera-relative cardinal mapping as movement. The resulting
-    # turn is still locked to a 90-degree construction-grid rotation, so parts
-    # remain exactly aligned to their cells.
+func _rotate_part_fixed(action: StringName) -> void:
+    # Fixed rotation mapping, independent of camera orientation. This restores
+    # the original builder behavior while retaining Basis-based 90-degree turns.
     var axis := Vector3.ZERO
-    var quarter_turns := 0
+    var degrees := 0.0
 
-    if grid_direction.x != 0:
-        axis = Vector3.UP
-        quarter_turns = grid_direction.x
-    elif grid_direction.y != 0:
-        axis = Vector3.RIGHT
-        quarter_turns = grid_direction.y
-    else:
-        return
+    match action:
+        &"builder_up":
+            axis = Vector3.RIGHT
+            degrees = -90.0
+        &"builder_down":
+            axis = Vector3.RIGHT
+            degrees = 90.0
+        &"builder_left":
+            axis = Vector3.UP
+            degrees = -90.0
+        &"builder_right":
+            axis = Vector3.UP
+            degrees = 90.0
+        _:
+            return
 
-    var turn := Basis(axis, deg_to_rad(90.0 * float(quarter_turns)))
+    var turn := Basis(axis, deg_to_rad(degrees))
     part_basis = (turn * part_basis).orthonormalized()
 
 func _change_level(delta: int) -> void:
