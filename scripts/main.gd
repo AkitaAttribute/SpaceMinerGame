@@ -285,10 +285,10 @@ func _build_touch_controls() -> void:
     dpad_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
     controls_root.add_child(dpad_root)
 
-    var up := _control_button("▲", Vector2(66, 0), Vector2(58, 58))
-    var down := _control_button("▼", Vector2(66, 132), Vector2(58, 58))
-    var left := _control_button("◀", Vector2(0, 66), Vector2(58, 58))
-    var right := _control_button("▶", Vector2(132, 66), Vector2(58, 58))
+    var up := _control_button("▲ U", Vector2(66, 0), Vector2(58, 58))
+    var down := _control_button("▼ D", Vector2(66, 132), Vector2(58, 58))
+    var left := _control_button("◀ L", Vector2(0, 66), Vector2(58, 58))
+    var right := _control_button("▶ R", Vector2(132, 66), Vector2(58, 58))
     var center := _control_button("＋", Vector2(66, 66), Vector2(58, 58))
     for button in [up, down, left, right, center]:
         dpad_root.add_child(button)
@@ -740,6 +740,19 @@ func _rotation_direction_color(action: StringName) -> Color:
         _:
             return Color.WHITE
 
+func _rotation_direction_letter(action: StringName) -> String:
+    match action:
+        &"builder_up":
+            return "U"
+        &"builder_down":
+            return "D"
+        &"builder_left":
+            return "L"
+        &"builder_right":
+            return "R"
+        _:
+            return "?"
+
 func _refresh_rotation_direction_button_colors() -> void:
     var rotation_mode := parts_open and not PartFactory.is_color_tool(selected_part)
 
@@ -812,7 +825,8 @@ func _refresh_rotation_guide() -> void:
             cell_min,
             cell_max,
             world_direction,
-            _rotation_direction_color(action)
+            _rotation_direction_color(action),
+            _rotation_direction_letter(action)
         )
 
 func _add_rotation_face_for_direction(
@@ -820,11 +834,13 @@ func _add_rotation_face_for_direction(
     cell_min: Vector3,
     cell_max: Vector3,
     direction: Vector3,
-    color: Color
+    color: Color,
+    letter: String
 ) -> void:
     var inset := 0.018
     var thickness := 0.018
     var axis := 0
+    var face_position := center
 
     if absf(direction.y) > absf(direction.x) and absf(direction.y) >= absf(direction.z):
         axis = 1
@@ -834,25 +850,53 @@ func _add_rotation_face_for_direction(
     match axis:
         0:
             var x := cell_max.x - inset if direction.x >= 0.0 else cell_min.x + inset
+            face_position = Vector3(x, center.y, center.z)
             _add_rotation_wall(
-                Vector3(x, center.y, center.z),
+                face_position,
                 Vector3(thickness, 0.96, 0.96),
                 color
             )
         1:
             var y := cell_max.y - inset if direction.y >= 0.0 else cell_min.y + inset
+            face_position = Vector3(center.x, y, center.z)
             _add_rotation_wall(
-                Vector3(center.x, y, center.z),
+                face_position,
                 Vector3(0.96, thickness, 0.96),
                 color
             )
         2:
             var z := cell_max.z - inset if direction.z >= 0.0 else cell_min.z + inset
+            face_position = Vector3(center.x, center.y, z)
             _add_rotation_wall(
-                Vector3(center.x, center.y, z),
+                face_position,
                 Vector3(0.96, 0.96, thickness),
                 color
             )
+
+    _add_rotation_wall_letter(face_position, direction, color, letter)
+
+func _add_rotation_wall_letter(
+    face_position: Vector3,
+    direction: Vector3,
+    color: Color,
+    letter: String
+) -> void:
+    var label := Label3D.new()
+    label.text = letter
+    label.font_size = 64
+    label.pixel_size = 0.006
+    label.modulate = Color(color.r, color.g, color.b, 0.68)
+    label.outline_modulate = Color(0.0, 0.0, 0.0, 0.55)
+    label.outline_size = 8
+    label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+    label.no_depth_test = true
+    label.render_priority = 2
+
+    # Offset it just beyond the tinted face so the character stays visible
+    # without z-fighting with the wall or the part.
+    var normal := direction.normalized()
+    label.position = face_position + normal * 0.035
+    rotation_guide_root.add_child(label)
 
 func _add_rotation_wall(position_value: Vector3, size_value: Vector3, color: Color) -> void:
     var mesh := BoxMesh.new()
