@@ -1,6 +1,7 @@
 extends Node
 
 signal theme_changed
+signal highlight_color_changed
 signal controls_visibility_changed
 signal bindings_changed
 
@@ -37,6 +38,7 @@ const ACTION_LABELS := {
 }
 
 var theme_mode := "system"
+var highlight_color := Color("#ffd83d")
 var show_controls_on_desktop := false
 
 func _ready() -> void:
@@ -77,6 +79,11 @@ func _load_settings() -> void:
     theme_mode = str(config.get_value("display", "theme_mode", "system"))
     if theme_mode not in ["system", "light", "dark"]:
         theme_mode = "system"
+
+    var stored_highlight = config.get_value("display", "highlight_color", Color("#ffd83d"))
+    if stored_highlight is Color:
+        highlight_color = stored_highlight
+
     show_controls_on_desktop = bool(config.get_value("controls", "show_on_desktop", false))
 
     for action in ACTION_ORDER:
@@ -95,6 +102,7 @@ func _load_settings() -> void:
 func save_settings() -> void:
     var config := ConfigFile.new()
     config.set_value("display", "theme_mode", theme_mode)
+    config.set_value("display", "highlight_color", highlight_color)
     config.set_value("controls", "show_on_desktop", show_controls_on_desktop)
 
     for action in ACTION_ORDER:
@@ -113,6 +121,11 @@ func set_theme_mode(value: String) -> void:
     theme_mode = value
     save_settings()
     theme_changed.emit()
+
+func set_highlight_color(value: Color) -> void:
+    highlight_color = value
+    save_settings()
+    highlight_color_changed.emit()
 
 func is_dark_theme() -> bool:
     if theme_mode == "dark":
