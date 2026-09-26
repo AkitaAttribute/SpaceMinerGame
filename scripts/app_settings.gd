@@ -43,6 +43,7 @@ var show_controls_on_desktop := false
 
 func _ready() -> void:
     _ensure_default_actions()
+    _disable_tab_focus_navigation()
     _load_settings()
 
 func _ensure_default_actions() -> void:
@@ -70,6 +71,21 @@ func _ensure_default_actions() -> void:
                 var event := InputEventKey.new()
                 event.physical_keycode = keycode
                 InputMap.action_add_event(action, event)
+
+func _disable_tab_focus_navigation() -> void:
+    # Tab is reserved for the parts drawer. Godot's built-in UI actions also
+    # use Tab/Shift+Tab for keyboard focus traversal, so remove only Tab from
+    # those actions and leave any other configured navigation inputs intact.
+    for action in [&"ui_focus_next", &"ui_focus_prev"]:
+        if not InputMap.has_action(action):
+            continue
+
+        for input_event in InputMap.action_get_events(action).duplicate():
+            if not (input_event is InputEventKey):
+                continue
+            var key_event := input_event as InputEventKey
+            if key_event.physical_keycode == KEY_TAB or key_event.keycode == KEY_TAB:
+                InputMap.action_erase_event(action, input_event)
 
 func _load_settings() -> void:
     var config := ConfigFile.new()
