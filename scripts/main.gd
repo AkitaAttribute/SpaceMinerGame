@@ -1056,6 +1056,11 @@ func _refresh_selection_highlight() -> void:
         AppLogger.event("HIGHLIGHT complete part=cube mode=cell_edges")
         return
 
+    if part_id == "half_sphere":
+        _add_half_sphere_rim_highlight(target)
+        AppLogger.event("HIGHLIGHT complete part=half_sphere mode=explicit_rim")
+        return
+
     # Non-cube parts use their actual geometric edges instead of an expanded
     # outline shell. The old shell approach could expose whole yellow faces on
     # slopes/cones depending on winding and view angle.
@@ -1351,6 +1356,39 @@ func _add_highlight_segments(transforms: Array[Transform3D]) -> void:
     instance.multimesh = multimesh
     instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     selection_highlight_root.add_child(instance)
+
+func _add_half_sphere_rim_highlight(target: Node3D) -> void:
+    # A hemisphere is smooth everywhere except the circular mounting rim.
+    # Deriving that rim from triangle crease angles made the highlight sit
+    # directly on the mesh and disappear unevenly behind the dome. Draw the
+    # intended perimeter explicitly, just outside the physical rim.
+    const SEGMENTS := 48
+    const RADIUS := 0.518
+    const PLANE_Y := -0.492
+
+    var transforms: Array[Transform3D] = []
+    for segment in range(SEGMENTS):
+        var angle_a := TAU * float(segment) / float(SEGMENTS)
+        var angle_b := TAU * float(segment + 1) / float(SEGMENTS)
+
+        var local_a := Vector3(
+            cos(angle_a) * RADIUS,
+            PLANE_Y,
+            sin(angle_a) * RADIUS
+        )
+        var local_b := Vector3(
+            cos(angle_b) * RADIUS,
+            PLANE_Y,
+            sin(angle_b) * RADIUS
+        )
+
+        var world_a := target.global_transform * local_a
+        var world_b := target.global_transform * local_b
+        var transform := _highlight_segment_transform(world_a, world_b)
+        if transform != Transform3D():
+            transforms.append(transform)
+
+    _add_highlight_segments(transforms)
 
 func _add_cube_cell_highlight(cell: Vector3i) -> void:
     var cell_min := Vector3(float(cell.x), float(cell.z), float(cell.y))
