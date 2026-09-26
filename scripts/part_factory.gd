@@ -10,36 +10,42 @@ const PARTS := [
         "name": "Cube",
         "slots": ["Hull"],
         "defaults": [DEFAULT_PART_COLOR],
+        "rotation_reference": Vector3(0.0, 0.0, -1.0),
     },
     {
         "id": "half_sphere",
         "name": "Half Sphere",
         "slots": ["Hull"],
         "defaults": [DEFAULT_PART_COLOR],
+        "rotation_reference": Vector3(0.0, 0.0, -1.0),
     },
     {
         "id": "pyramid",
         "name": "Pyramid",
         "slots": ["Hull"],
         "defaults": [DEFAULT_PART_COLOR],
+        "rotation_reference": Vector3(0.0, 0.0, -1.0),
     },
     {
         "id": "small_slope",
         "name": "Small Slope",
         "slots": ["Hull"],
         "defaults": [DEFAULT_PART_COLOR],
+        "rotation_reference": Vector3(0.0, 0.0, -1.0),
     },
     {
         "id": "roof",
         "name": "Even Roof",
         "slots": ["Left", "Right"],
         "defaults": [DEFAULT_PART_COLOR, DEFAULT_PART_COLOR],
+        "rotation_reference": Vector3(0.0, 0.0, -1.0),
     },
     {
         "id": "large_slope",
         "name": "Large Slope",
         "slots": ["Hull"],
         "defaults": [DEFAULT_PART_COLOR],
+        "rotation_reference": Vector3(0.0, 0.0, -1.0),
     },
     {
         "id": "color_tool",
@@ -53,6 +59,7 @@ const PARTS := [
         "name": "Tier 1 Thruster",
         "slots": ["Thruster Cone"],
         "defaults": [THRUSTER_CONE_COLOR],
+        "rotation_reference": Vector3(0.0, 0.0, -1.0),
         "functional": true,
     },
     {
@@ -60,6 +67,7 @@ const PARTS := [
         "name": "Tier 2 Thruster",
         "slots": ["Thruster Cone", "Fuel Body"],
         "defaults": [THRUSTER_CONE_COLOR, DEFAULT_PART_COLOR],
+        "rotation_reference": Vector3(0.0, 0.0, -1.0),
         "functional": true,
     },
 ]
@@ -75,6 +83,13 @@ static func get_part_index_by_id(part_id: String) -> int:
         if str(PARTS[index]["id"]) == part_id:
             return index
     return -1
+
+static func rotation_reference_normal(index: int) -> Vector3:
+    var definition := get_definition(index)
+    var value = definition.get("rotation_reference", Vector3(0.0, 0.0, -1.0))
+    if value is Vector3:
+        return (value as Vector3).normalized()
+    return Vector3(0.0, 0.0, -1.0)
 
 static func is_color_tool(index: int) -> bool:
     return str(get_definition(index)["id"]) == "color_tool"
