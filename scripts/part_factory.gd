@@ -2,6 +2,7 @@ class_name PartFactory
 extends RefCounted
 
 const DEFAULT_PART_COLOR := Color("#5f83c6")
+const THRUST_OPENING_COLOR := Color("#171a20")
 
 const PARTS := [
     {
@@ -40,6 +41,27 @@ const PARTS := [
         "slots": ["Hull"],
         "defaults": [DEFAULT_PART_COLOR],
     },
+    {
+        "id": "color_tool",
+        "name": "Color Tool",
+        "slots": ["Paint"],
+        "defaults": [DEFAULT_PART_COLOR],
+        "tool": true,
+    },
+    {
+        "id": "thruster_t1",
+        "name": "Tier 1 Thruster",
+        "slots": ["Body", "Thrust Opening"],
+        "defaults": [DEFAULT_PART_COLOR, THRUST_OPENING_COLOR],
+        "functional": true,
+    },
+    {
+        "id": "thruster_t2",
+        "name": "Tier 2 Thruster",
+        "slots": ["Body", "Thrust Opening"],
+        "defaults": [DEFAULT_PART_COLOR, THRUST_OPENING_COLOR],
+        "functional": true,
+    },
 ]
 
 static func part_count() -> int:
@@ -47,6 +69,24 @@ static func part_count() -> int:
 
 static func get_definition(index: int) -> Dictionary:
     return PARTS[clampi(index, 0, PARTS.size() - 1)]
+
+static func get_part_index_by_id(part_id: String) -> int:
+    for index in range(PARTS.size()):
+        if str(PARTS[index]["id"]) == part_id:
+            return index
+    return -1
+
+static func is_color_tool(index: int) -> bool:
+    return str(get_definition(index)["id"]) == "color_tool"
+
+static func is_placeable(index: int) -> bool:
+    return not bool(get_definition(index).get("tool", false))
+
+static func occupied_offsets(index: int) -> Array[Vector3i]:
+    var result: Array[Vector3i] = [Vector3i.ZERO]
+    if str(get_definition(index)["id"]) == "thruster_t2":
+        result.append(Vector3i(0, 1, 0))
+    return result
 
 static func create_part(index: int, colors: Array[Color], ghost := false) -> Node3D:
     var definition := get_definition(index)
@@ -56,19 +96,25 @@ static func create_part(index: int, colors: Array[Color], ghost := false) -> Nod
 
     match str(definition["id"]):
         "cube":
-            _add_box(root, Vector3.ONE, colors[0], ghost)
+            _add_box(root, Vector3.ONE, colors[0], ghost, 0)
         "half_sphere":
-            _add_mesh(root, _hemisphere_mesh(), colors[0], ghost)
+            _add_mesh(root, _hemisphere_mesh(), colors[0], ghost, 0)
         "pyramid":
-            _add_mesh(root, _pyramid_mesh(), colors[0], ghost)
+            _add_mesh(root, _pyramid_mesh(), colors[0], ghost, 0)
         "small_slope":
-            _add_mesh(root, _wedge_mesh(1.0, 0.52), colors[0], ghost)
+            _add_mesh(root, _wedge_mesh(1.0, 0.52), colors[0], ghost, 0)
         "roof":
             _add_roof(root, colors, ghost)
         "large_slope":
-            _add_mesh(root, _wedge_mesh(1.0, 1.0), colors[0], ghost)
+            _add_mesh(root, _wedge_mesh(1.0, 1.0), colors[0], ghost, 0)
+        "thruster_t1":
+            _add_thruster_tier_1(root, colors, ghost)
+        "thruster_t2":
+            _add_thruster_tier_2(root, colors, ghost)
+        "color_tool":
+            pass
         _:
-            _add_box(root, Vector3.ONE, colors[0], ghost)
+            _add_box(root, Vector3.ONE, colors[0], ghost, 0)
 
     return root
 
@@ -86,38 +132,97 @@ static func color_slot_names(index: int) -> Array[String]:
         result.append(str(value))
     return result
 
-static func _add_box(root: Node3D, size: Vector3, color: Color, ghost: bool) -> void:
+static func apply_colors(root: Node, colors: Array[Color], ghost := false) -> void:
+    if root is MeshInstance3D:
+        var instance := root as MeshInstance3D
+        if instance.has_meta("color_slot"):
+            var slot := int(instance.get_meta("color_slot"))
+            if slot >= 0 and slot < colors.size():
+                instance.material_override = _material(colors[slot], ghost)
+    for child in root.get_children():
+        apply_colors(child, colors, ghost)
+
+static func _add_box(
+    root: Node3D,
+    size: Vector3,
+    color: Color,
+    ghost: bool,
+    color_slot: int
+) -> void:
     var mesh := BoxMesh.new()
     mesh.size = size
-    var instance := MeshInstance3D.new()
-    instance.mesh = mesh
-    instance.material_override = _material(color, ghost)
-    root.add_child(instance)
+    _add_mesh(root, mesh, color, ghost, color_slot)
 
-static func _add_mesh(root: Node3D, mesh: Mesh, color: Color, ghost: bool) -> void:
+static func _add_mesh(
+    root: Node3D,
+    mesh: Mesh,
+    color: Color,
+    ghost: bool,
+    color_slot: int,
+    position_value := Vector3.ZERO,
+    rotation_degrees_value := Vector3.ZERO
+) -> MeshInstance3D:
     var instance := MeshInstance3D.new()
     instance.mesh = mesh
+    instance.position = position_value
+    instance.rotation_degrees = rotation_degrees_value
     instance.material_override = _material(color, ghost)
+    instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    instance.set_meta("color_slot", color_slot)
     root.add_child(instance)
+    return instance
 
 static func _add_roof(root: Node3D, colors: Array[Color], ghost: bool) -> void:
     var left_mesh := BoxMesh.new()
     left_mesh.size = Vector3(0.68, 0.12, 0.96)
-    var left := MeshInstance3D.new()
-    left.mesh = left_mesh
-    left.position = Vector3(-0.24, 0.18, 0.0)
-    left.rotation_degrees.z = -45.0
-    left.material_override = _material(colors[0], ghost)
-    root.add_child(left)
+    _add_mesh(
+        root,
+        left_mesh,
+        colors[0],
+        ghost,
+        0,
+        Vector3(-0.24, 0.18, 0.0),
+        Vector3(0.0, 0.0, -45.0)
+    )
 
     var right_mesh := BoxMesh.new()
     right_mesh.size = Vector3(0.68, 0.12, 0.96)
-    var right := MeshInstance3D.new()
-    right.mesh = right_mesh
-    right.position = Vector3(0.24, 0.18, 0.0)
-    right.rotation_degrees.z = 45.0
-    right.material_override = _material(colors[1] if colors.size() > 1 else colors[0], ghost)
-    root.add_child(right)
+    _add_mesh(
+        root,
+        right_mesh,
+        colors[1] if colors.size() > 1 else colors[0],
+        ghost,
+        1,
+        Vector3(0.24, 0.18, 0.0),
+        Vector3(0.0, 0.0, 45.0)
+    )
+
+static func _add_thruster_tier_1(root: Node3D, colors: Array[Color], ghost: bool) -> void:
+    # Half-cell truncated nozzle. The broad end is open and the dark inset is
+    # recessed so it reads as a thrust opening rather than a painted disk.
+    var shell := _hollow_frustum_mesh(0.0, 0.48, 0.22, 0.46, 0.145, 0.365)
+    _add_mesh(root, shell, colors[0], ghost, 0)
+
+    var opening := _inward_tube_mesh(0.10, 0.44, 0.18)
+    _add_mesh(root, opening, colors[1], ghost, 1)
+
+static func _add_thruster_tier_2(root: Node3D, colors: Array[Color], ghost: bool) -> void:
+    # Cell one is a compact <=> fuel body.
+    var fuel_profile := PackedVector2Array([
+        Vector2(-0.46, 0.22),
+        Vector2(-0.26, 0.40),
+        Vector2(0.26, 0.40),
+        Vector2(0.46, 0.22),
+    ])
+    _add_mesh(root, _profiled_solid_mesh(fuel_profile), colors[0], ghost, 0)
+
+    # Cell two is a full-cell truncated nozzle, giving the complete part a
+    # two-cell footprint along local +Z.
+    var shell := _hollow_frustum_mesh(0.50, 1.48, 0.22, 0.46, 0.145, 0.365)
+    _add_mesh(root, shell, colors[0], ghost, 0)
+
+    var opening := _inward_tube_mesh(0.72, 1.43, 0.19)
+    _add_mesh(root, opening, colors[1], ghost, 1)
 
 static func _material(color: Color, ghost: bool) -> StandardMaterial3D:
     var material := StandardMaterial3D.new()
@@ -126,8 +231,6 @@ static func _material(color: Color, ghost: bool) -> StandardMaterial3D:
         final_color.a = 0.46
         material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
     material.albedo_color = final_color
-    # Builder pieces are intentionally matte. This avoids the bright specular
-    # response that made slopes and pyramids read as though they were emissive.
     material.metallic = 0.0
     material.roughness = 0.82
     return material
@@ -185,9 +288,6 @@ static func _hemisphere_mesh() -> ArrayMesh:
             var p01 := _hemisphere_point(theta0, phi1, radius, plane_y)
             var p10 := _hemisphere_point(theta1, phi0, radius, plane_y)
             var p11 := _hemisphere_point(theta1, phi1, radius, plane_y)
-            # The curved shell previously used the opposite winding from the
-            # rest of the custom parts, so Godot treated the outside as a back
-            # face and the hemisphere looked hollow from common camera angles.
             vertices.append_array(PackedVector3Array([p00, p11, p10, p00, p01, p11]))
 
     var center := Vector3(0.0, plane_y, 0.0)
@@ -207,6 +307,94 @@ static func _hemisphere_point(theta: float, phi: float, radius: float, plane_y: 
         plane_y + sin(theta) * radius,
         sin(phi) * ring_radius
     )
+
+static func _profiled_solid_mesh(profile: PackedVector2Array, segments := 24) -> ArrayMesh:
+    var vertices := PackedVector3Array()
+    if profile.size() < 2:
+        return _mesh_from_triangles(vertices)
+
+    for profile_index in range(profile.size() - 1):
+        var z0 := profile[profile_index].x
+        var r0 := profile[profile_index].y
+        var z1 := profile[profile_index + 1].x
+        var r1 := profile[profile_index + 1].y
+        for segment in range(segments):
+            var phi0 := TAU * float(segment) / float(segments)
+            var phi1 := TAU * float(segment + 1) / float(segments)
+            var a0 := Vector3(cos(phi0) * r0, sin(phi0) * r0, z0)
+            var a1 := Vector3(cos(phi1) * r0, sin(phi1) * r0, z0)
+            var b0 := Vector3(cos(phi0) * r1, sin(phi0) * r1, z1)
+            var b1 := Vector3(cos(phi1) * r1, sin(phi1) * r1, z1)
+            vertices.append_array(PackedVector3Array([a0, a1, b1, a0, b1, b0]))
+
+    var first := profile[0]
+    var last := profile[profile.size() - 1]
+    var start_center := Vector3(0.0, 0.0, first.x)
+    var end_center := Vector3(0.0, 0.0, last.x)
+    for segment in range(segments):
+        var phi0 := TAU * float(segment) / float(segments)
+        var phi1 := TAU * float(segment + 1) / float(segments)
+        var start0 := Vector3(cos(phi0) * first.y, sin(phi0) * first.y, first.x)
+        var start1 := Vector3(cos(phi1) * first.y, sin(phi1) * first.y, first.x)
+        vertices.append_array(PackedVector3Array([start_center, start1, start0]))
+
+        var end0 := Vector3(cos(phi0) * last.y, sin(phi0) * last.y, last.x)
+        var end1 := Vector3(cos(phi1) * last.y, sin(phi1) * last.y, last.x)
+        vertices.append_array(PackedVector3Array([end_center, end0, end1]))
+
+    return _mesh_from_triangles(vertices)
+
+static func _hollow_frustum_mesh(
+    z0: float,
+    z1: float,
+    outer0: float,
+    outer1: float,
+    inner0: float,
+    inner1: float,
+    segments := 24
+) -> ArrayMesh:
+    var vertices := PackedVector3Array()
+
+    for segment in range(segments):
+        var phi0 := TAU * float(segment) / float(segments)
+        var phi1 := TAU * float(segment + 1) / float(segments)
+
+        var o00 := Vector3(cos(phi0) * outer0, sin(phi0) * outer0, z0)
+        var o01 := Vector3(cos(phi1) * outer0, sin(phi1) * outer0, z0)
+        var o10 := Vector3(cos(phi0) * outer1, sin(phi0) * outer1, z1)
+        var o11 := Vector3(cos(phi1) * outer1, sin(phi1) * outer1, z1)
+        vertices.append_array(PackedVector3Array([o00, o01, o11, o00, o11, o10]))
+
+        var i00 := Vector3(cos(phi0) * inner0, sin(phi0) * inner0, z0)
+        var i01 := Vector3(cos(phi1) * inner0, sin(phi1) * inner0, z0)
+        var i10 := Vector3(cos(phi0) * inner1, sin(phi0) * inner1, z1)
+        var i11 := Vector3(cos(phi1) * inner1, sin(phi1) * inner1, z1)
+        vertices.append_array(PackedVector3Array([i00, i11, i01, i00, i10, i11]))
+
+        # Annular small and large faces keep the shell visibly thick rather than
+        # reading as a zero-thickness cone.
+        vertices.append_array(PackedVector3Array([o00, i01, o01, o00, i00, i01]))
+        vertices.append_array(PackedVector3Array([o10, o11, i11, o10, i11, i10]))
+
+    return _mesh_from_triangles(vertices)
+
+static func _inward_tube_mesh(z0: float, z1: float, radius: float, segments := 24) -> ArrayMesh:
+    var vertices := PackedVector3Array()
+    for segment in range(segments):
+        var phi0 := TAU * float(segment) / float(segments)
+        var phi1 := TAU * float(segment + 1) / float(segments)
+        var a0 := Vector3(cos(phi0) * radius, sin(phi0) * radius, z0)
+        var a1 := Vector3(cos(phi1) * radius, sin(phi1) * radius, z0)
+        var b0 := Vector3(cos(phi0) * radius, sin(phi0) * radius, z1)
+        var b1 := Vector3(cos(phi1) * radius, sin(phi1) * radius, z1)
+
+        # Reversed winding makes the inside wall visible from the open end.
+        vertices.append_array(PackedVector3Array([a0, b1, a1, a0, b0, b1]))
+
+        # Only the deep end is capped. The broad end stays open.
+        vertices.append_array(PackedVector3Array([Vector3(0.0, 0.0, z0), a0, a1]))
+
+    return _mesh_from_triangles(vertices)
 
 static func _mesh_from_triangles(vertices: PackedVector3Array) -> ArrayMesh:
     var surface := SurfaceTool.new()
