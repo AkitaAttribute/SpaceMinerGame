@@ -1456,7 +1456,7 @@ func _rebuild_grid() -> void:
 
     var below: Array[Transform3D] = []
     var current: Array[Transform3D] = []
-    var above: Array[Transform3D] = []
+    var upper_bounds: Array[Transform3D] = []
     var thickness := 0.026
 
     # GRID_MIN/MAX values describe usable 1x1x1 cells. The visible line cage
@@ -1473,15 +1473,11 @@ func _rebuild_grid() -> void:
     var center_x := float(x_line_min + x_line_max) * 0.5
     var center_depth := float(depth_line_min + depth_line_max) * 0.5
 
-    # Horizontal boundary planes.
-    for level in range(level_line_min, level_line_max + 1):
-        var target: Array[Transform3D]
-        if level == cursor.z:
-            target = current
-        elif level < cursor.z:
-            target = below
-        else:
-            target = above
+    # Draw the full horizontal grid only at and below the selected Z level.
+    # Everything above the current selection is intentionally empty so it does
+    # not obscure the ship. The outer build-volume cage is added separately.
+    for level in range(level_line_min, min(cursor.z, level_line_max) + 1):
+        var target: Array[Transform3D] = current if level == cursor.z else below
 
         for depth in range(depth_line_min, depth_line_max + 1):
             target.append(_beam_transform(
@@ -1494,25 +1490,46 @@ func _rebuild_grid() -> void:
                 Vector3(thickness, thickness, span_depth)
             ))
 
-    # Vertical boundary segments are split by logical cell level so the focus
-    # treatment can make the selected level and everything beneath it clearer.
+    # Vertical grid segments also stop above the selected cell layer.
     for x in range(x_line_min, x_line_max + 1):
         for depth in range(depth_line_min, depth_line_max + 1):
-            for level in range(GRID_MIN_LEVEL, GRID_MAX_LEVEL + 1):
-                var target: Array[Transform3D]
-                if level == cursor.z:
-                    target = current
-                elif level < cursor.z:
-                    target = below
-                else:
-                    target = above
+            for level in range(GRID_MIN_LEVEL, min(cursor.z, GRID_MAX_LEVEL) + 1):
+                var target: Array[Transform3D] = current if level == cursor.z else below
                 target.append(_beam_transform(
                     Vector3(float(x), float(level) + 0.5, float(depth)),
                     Vector3(thickness, 1.0, thickness)
                 ))
 
+    # Preserve a faint outline of the maximum construction volume above the
+    # active Z layer. Only the four upper corner posts and the top rectangle are
+    # shown; no interior grid lines are rendered above the selection.
+    var upper_start := maxf(float(cursor.z + 1), float(level_line_min))
+    var upper_height := float(level_line_max) - upper_start
+
+    if upper_height > 0.0:
+        var upper_center_y := upper_start + upper_height * 0.5
+        for x in [x_line_min, x_line_max]:
+            for depth in [depth_line_min, depth_line_max]:
+                upper_bounds.append(_beam_transform(
+                    Vector3(float(x), upper_center_y, float(depth)),
+                    Vector3(thickness, upper_height, thickness)
+                ))
+
+    if cursor.z < level_line_max:
+        var top_y := float(level_line_max)
+        for depth in [depth_line_min, depth_line_max]:
+            upper_bounds.append(_beam_transform(
+                Vector3(center_x, top_y, float(depth)),
+                Vector3(span_x, thickness, thickness)
+            ))
+        for x in [x_line_min, x_line_max]:
+            upper_bounds.append(_beam_transform(
+                Vector3(float(x), top_y, center_depth),
+                Vector3(thickness, thickness, span_depth)
+            ))
+
     var accent: Color = palette.get("accent", Color("#4fb7d8"))
-    _add_grid_multimesh(above, Color(accent.r, accent.g, accent.b, 0.045))
+    _add_grid_multimesh(upper_bounds, Color(accent.r, accent.g, accent.b, 0.055))
     _add_grid_multimesh(below, Color(accent.r, accent.g, accent.b, 0.20))
     _add_grid_multimesh(current, Color(accent.r, accent.g, accent.b, 0.42))
 
