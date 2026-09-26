@@ -45,6 +45,7 @@ var place_button: Button
 var level_label: Label
 var controls_root: Control
 var dpad_root: Control
+var vertical_controls_root: Control
 var previous_bumper: Button
 var next_bumper: Button
 var gear_button: Button
@@ -299,19 +300,19 @@ func _build_touch_controls() -> void:
     dpad_root.add_child(previous_bumper)
     dpad_root.add_child(next_bumper)
 
-    var vertical_root := Control.new()
-    vertical_root.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-    vertical_root.position = Vector2(-116.0, -198.0)
-    vertical_root.size = Vector2(84.0, 160.0)
-    vertical_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    controls_root.add_child(vertical_root)
+    vertical_controls_root = Control.new()
+    vertical_controls_root.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+    vertical_controls_root.position = Vector2(-116.0, -198.0)
+    vertical_controls_root.size = Vector2(84.0, 160.0)
+    vertical_controls_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    controls_root.add_child(vertical_controls_root)
 
     var vertical_up := _control_button("UP", Vector2(0, 0), Vector2(78, 64))
     var vertical_down := _control_button("DOWN", Vector2(0, 88), Vector2(78, 64))
     vertical_up.pressed.connect(func(): _change_level(1))
     vertical_down.pressed.connect(func(): _change_level(-1))
-    vertical_root.add_child(vertical_up)
-    vertical_root.add_child(vertical_down)
+    vertical_controls_root.add_child(vertical_up)
+    vertical_controls_root.add_child(vertical_down)
 
 func _control_button(text_value: String, position_value: Vector2, size_value: Vector2) -> Button:
     var button := Button.new()
@@ -374,6 +375,14 @@ func _refresh_controls_visibility() -> void:
         return
     controls_root.visible = AppSettings.should_show_touch_controls() and not menu_open
     _refresh_bumper_visibility()
+    _refresh_vertical_controls_visibility()
+
+func _refresh_vertical_controls_visibility() -> void:
+    if vertical_controls_root == null:
+        return
+    # The parts drawer is an editing state, not a grid-navigation state.
+    # Vertical navigation disappears completely until the drawer is closed.
+    vertical_controls_root.visible = not parts_open
 
 func _refresh_bumper_visibility() -> void:
     if previous_bumper == null:
@@ -666,6 +675,7 @@ func _set_parts_open(value: bool) -> void:
     parts_dim.visible = value
     parts_tab.visible = not value
     _refresh_bumper_visibility()
+    _refresh_vertical_controls_visibility()
     if value:
         _refresh_color_controls()
     _refresh_part_action_label()
@@ -677,9 +687,12 @@ func _perform_dpad(action: StringName) -> void:
     if grid_direction == Vector2i.ZERO:
         return
 
-    if parts_open and not PartFactory.is_color_tool(selected_part):
-        _rotate_part_in_grid_direction(grid_direction)
-        _refresh_ghost()
+    if parts_open:
+        # Inside the parts drawer, D-pad/WASD is reserved for part rotation.
+        # Tools with nothing to rotate simply ignore it rather than navigating.
+        if not PartFactory.is_color_tool(selected_part):
+            _rotate_part_in_grid_direction(grid_direction)
+            _refresh_ghost()
         return
 
     cursor.x = clampi(cursor.x + grid_direction.x, GRID_MIN_X, GRID_MAX_X)
@@ -749,6 +762,8 @@ func _rotate_part_in_grid_direction(grid_direction: Vector2i) -> void:
     part_basis = (turn * part_basis).orthonormalized()
 
 func _change_level(delta: int) -> void:
+    if parts_open:
+        return
     cursor.z = clampi(cursor.z + delta, GRID_MIN_LEVEL, GRID_MAX_LEVEL)
     _refresh_ghost()
     _refresh_selection_highlight()
