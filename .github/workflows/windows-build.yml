@@ -54,7 +54,7 @@ jobs:
           set +e
           set -o pipefail
           timeout 8s godot --headless --path . 2>&1 | tee /tmp/godot-runtime.log
-          status=\${PIPESTATUS[0]}
+          status=${PIPESTATUS[0]}
           set -e
           if [[ $status -ne 0 && $status -ne 124 ]]; then
             exit $status
@@ -80,7 +80,7 @@ jobs:
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
-          name: SpaceMinerGame-Windows-\${{ github.sha }}
+          name: SpaceMinerGame-Windows-${{ github.sha }}
           path: build/SpaceMinerGame.exe
           if-no-files-found: error
           retention-days: 14
