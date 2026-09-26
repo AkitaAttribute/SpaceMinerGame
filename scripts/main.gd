@@ -398,6 +398,16 @@ func _input(event: InputEvent) -> void:
             binding_action = &""
             _show_controls_menu()
             get_viewport().set_input_as_handled()
+        return
+
+    # Handle the drawer toggle before Control nodes see the event. This prevents
+    # Tab (or a remapped equivalent) from ever falling through into UI focus
+    # traversal/accessibility-style navigation.
+    if event.is_action_pressed(&"parts_toggle"):
+        if not menu_open:
+            _set_parts_open(not parts_open)
+        get_viewport().set_input_as_handled()
+        return
 
 func _unhandled_input(event: InputEvent) -> void:
     if event.is_action_pressed(&"menu_back"):
@@ -406,11 +416,6 @@ func _unhandled_input(event: InputEvent) -> void:
         return
 
     if menu_open:
-        return
-
-    if event.is_action_pressed(&"parts_toggle"):
-        _set_parts_open(not parts_open)
-        get_viewport().set_input_as_handled()
         return
 
     if event is InputEventKey and event.pressed and not event.echo:
