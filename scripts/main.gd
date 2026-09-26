@@ -1225,11 +1225,11 @@ func _add_highlight_segment(a: Vector3, b: Vector3) -> void:
     instance.mesh = mesh
     instance.material_override = material
     instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    selection_highlight_root.add_child(instance)
     instance.global_transform = Transform3D(
         Basis(x_axis, y_axis, z_axis),
         (a + b) * 0.5
     )
-    selection_highlight_root.add_child(instance)
 
 func _add_cube_cell_highlight(cell: Vector3i) -> void:
     var cell_min := Vector3(float(cell.x), float(cell.z), float(cell.y))
