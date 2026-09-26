@@ -2,7 +2,7 @@ class_name PartFactory
 extends RefCounted
 
 const DEFAULT_PART_COLOR := Color("#5f83c6")
-const FUEL_BODY_COLOR := Color("#25282f")
+const THRUSTER_CONE_COLOR := Color("#25282f")
 
 const PARTS := [
     {
@@ -51,15 +51,15 @@ const PARTS := [
     {
         "id": "thruster_t1",
         "name": "Tier 1 Thruster",
-        "slots": ["Thruster"],
-        "defaults": [DEFAULT_PART_COLOR],
+        "slots": ["Thruster Cone"],
+        "defaults": [THRUSTER_CONE_COLOR],
         "functional": true,
     },
     {
         "id": "thruster_t2",
         "name": "Tier 2 Thruster",
-        "slots": ["Thruster", "Fuel Body"],
-        "defaults": [DEFAULT_PART_COLOR, FUEL_BODY_COLOR],
+        "slots": ["Thruster Cone", "Fuel Body"],
+        "defaults": [THRUSTER_CONE_COLOR, DEFAULT_PART_COLOR],
         "functional": true,
     },
 ]
