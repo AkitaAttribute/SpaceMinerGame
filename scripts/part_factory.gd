@@ -1,42 +1,44 @@
 class_name PartFactory
 extends RefCounted
 
+const DEFAULT_PART_COLOR := DEFAULT_PART_COLOR
+
 const PARTS := [
     {
         "id": "cube",
         "name": "Cube",
         "slots": ["Hull"],
-        "defaults": [Color("#5f83c6")],
+        "defaults": [DEFAULT_PART_COLOR],
     },
     {
         "id": "half_sphere",
         "name": "Half Sphere",
         "slots": ["Hull"],
-        "defaults": [Color("#7a92cf")],
+        "defaults": [DEFAULT_PART_COLOR],
     },
     {
         "id": "pyramid",
         "name": "Pyramid",
         "slots": ["Hull"],
-        "defaults": [Color("#8a72c9")],
+        "defaults": [DEFAULT_PART_COLOR],
     },
     {
         "id": "small_slope",
         "name": "Small Slope",
         "slots": ["Hull"],
-        "defaults": [Color("#4f96a8")],
+        "defaults": [DEFAULT_PART_COLOR],
     },
     {
         "id": "roof",
         "name": "Even Roof",
         "slots": ["Left", "Right"],
-        "defaults": [Color("#b36d78"), Color("#d79a67")],
+        "defaults": [DEFAULT_PART_COLOR, DEFAULT_PART_COLOR],
     },
     {
         "id": "large_slope",
         "name": "Large Slope",
         "slots": ["Hull"],
-        "defaults": [Color("#5e9a77")],
+        "defaults": [DEFAULT_PART_COLOR],
     },
 ]
 
@@ -64,7 +66,7 @@ static func create_part(index: int, colors: Array[Color], ghost := false) -> Nod
         "roof":
             _add_roof(root, colors, ghost)
         "large_slope":
-            _add_mesh(root, _wedge_mesh(2.0, 1.0), colors[0], ghost)
+            _add_mesh(root, _wedge_mesh(1.0, 1.0), colors[0], ghost)
         _:
             _add_box(root, Vector3.ONE, colors[0], ghost)
 
@@ -100,19 +102,19 @@ static func _add_mesh(root: Node3D, mesh: Mesh, color: Color, ghost: bool) -> vo
 
 static func _add_roof(root: Node3D, colors: Array[Color], ghost: bool) -> void:
     var left_mesh := BoxMesh.new()
-    left_mesh.size = Vector3(0.74, 0.12, 1.0)
+    left_mesh.size = Vector3(0.68, 0.12, 0.96)
     var left := MeshInstance3D.new()
     left.mesh = left_mesh
-    left.position = Vector3(-0.25, 0.23, 0.0)
+    left.position = Vector3(-0.24, 0.18, 0.0)
     left.rotation_degrees.z = -45.0
     left.material_override = _material(colors[0], ghost)
     root.add_child(left)
 
     var right_mesh := BoxMesh.new()
-    right_mesh.size = Vector3(0.74, 0.12, 1.0)
+    right_mesh.size = Vector3(0.68, 0.12, 0.96)
     var right := MeshInstance3D.new()
     right.mesh = right_mesh
-    right.position = Vector3(0.25, 0.23, 0.0)
+    right.position = Vector3(0.24, 0.18, 0.0)
     right.rotation_degrees.z = 45.0
     right.material_override = _material(colors[1] if colors.size() > 1 else colors[0], ghost)
     root.add_child(right)
