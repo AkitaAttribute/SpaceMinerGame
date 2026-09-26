@@ -24,7 +24,7 @@ var placed_root: Node3D
 var ghost_root: Node3D
 var cursor := Vector3i(0, 0, 0)
 var selected_part := 0
-var part_rotation := Vector3i.ZERO
+var part_basis := Basis.IDENTITY
 var part_colors: Dictionary = {}
 var placed_parts: Dictionary = {}
 
@@ -649,30 +649,77 @@ func _set_parts_open(value: bool) -> void:
     _refresh_ghost()
 
 func _perform_dpad(action: StringName) -> void:
+    var grid_direction := _camera_relative_grid_direction(action)
+    if grid_direction == Vector2i.ZERO:
+        return
+
     if parts_open:
-        match action:
-            &"builder_up":
-                part_rotation.x = posmod(part_rotation.x - 90, 360)
-            &"builder_down":
-                part_rotation.x = posmod(part_rotation.x + 90, 360)
-            &"builder_left":
-                part_rotation.y = posmod(part_rotation.y - 90, 360)
-            &"builder_right":
-                part_rotation.y = posmod(part_rotation.y + 90, 360)
+        _rotate_part_in_grid_direction(grid_direction)
         _refresh_ghost()
         return
 
-    match action:
-        &"builder_up":
-            cursor.y = clampi(cursor.y - 1, GRID_MIN_DEPTH, GRID_MAX_DEPTH)
-        &"builder_down":
-            cursor.y = clampi(cursor.y + 1, GRID_MIN_DEPTH, GRID_MAX_DEPTH)
-        &"builder_left":
-            cursor.x = clampi(cursor.x - 1, GRID_MIN_X, GRID_MAX_X)
-        &"builder_right":
-            cursor.x = clampi(cursor.x + 1, GRID_MIN_X, GRID_MAX_X)
+    cursor.x = clampi(cursor.x + grid_direction.x, GRID_MIN_X, GRID_MAX_X)
+    cursor.y = clampi(cursor.y + grid_direction.y, GRID_MIN_DEPTH, GRID_MAX_DEPTH)
     _refresh_ghost()
     _update_level_label()
+
+func _camera_relative_grid_direction(action: StringName) -> Vector2i:
+    if camera == null:
+        return Vector2i.ZERO
+
+    # The D-pad/WASD describe screen directions, not fixed world axes. Project
+    # the camera's current horizontal basis onto the construction plane, then
+    # snap the result to the nearest grid cardinal. This makes the controls flip
+    # naturally when the user orbits to the opposite side of the ship.
+    var camera_right := camera.global_basis.x
+    camera_right.y = 0.0
+    if camera_right.length_squared() < 0.0001:
+        camera_right = Vector3.RIGHT
+    else:
+        camera_right = camera_right.normalized()
+
+    var camera_forward := -camera.global_basis.z
+    camera_forward.y = 0.0
+    if camera_forward.length_squared() < 0.0001:
+        camera_forward = Vector3.FORWARD
+    else:
+        camera_forward = camera_forward.normalized()
+
+    var world_direction := Vector3.ZERO
+    match action:
+        &"builder_up":
+            world_direction = camera_forward
+        &"builder_down":
+            world_direction = -camera_forward
+        &"builder_left":
+            world_direction = -camera_right
+        &"builder_right":
+            world_direction = camera_right
+        _:
+            return Vector2i.ZERO
+
+    if absf(world_direction.x) >= absf(world_direction.z):
+        return Vector2i(1 if world_direction.x >= 0.0 else -1, 0)
+    return Vector2i(0, 1 if world_direction.z >= 0.0 else -1)
+
+func _rotate_part_in_grid_direction(grid_direction: Vector2i) -> void:
+    # Use the same camera-relative cardinal mapping as movement. The resulting
+    # turn is still locked to a 90-degree construction-grid rotation, so parts
+    # remain exactly aligned to their cells.
+    var axis := Vector3.ZERO
+    var quarter_turns := 0
+
+    if grid_direction.x != 0:
+        axis = Vector3.UP
+        quarter_turns = grid_direction.x
+    elif grid_direction.y != 0:
+        axis = Vector3.RIGHT
+        quarter_turns = grid_direction.y
+    else:
+        return
+
+    var turn := Basis(axis, deg_to_rad(90.0 * float(quarter_turns)))
+    part_basis = (turn * part_basis).orthonormalized()
 
 func _change_level(delta: int) -> void:
     cursor.z = clampi(cursor.z + delta, GRID_MIN_LEVEL, GRID_MAX_LEVEL)
@@ -684,14 +731,14 @@ func _cycle_part(delta: int) -> void:
     if not parts_open:
         return
     selected_part = posmod(selected_part + delta, PartFactory.part_count())
-    part_rotation = Vector3i.ZERO
+    part_basis = Basis.IDENTITY
     _refresh_ghost()
     _rebuild_part_cards()
     _refresh_color_controls()
 
 func _select_part(index: int) -> void:
     selected_part = clampi(index, 0, PartFactory.part_count() - 1)
-    part_rotation = Vector3i.ZERO
+    part_basis = Basis.IDENTITY
     _refresh_ghost()
     _rebuild_part_cards()
     _refresh_color_controls()
@@ -733,7 +780,7 @@ func _refresh_ghost() -> void:
 
     var ghost := PartFactory.create_part(selected_part, colors, true)
     ghost.position = _cursor_world_position()
-    ghost.rotation_degrees = Vector3(part_rotation.x, part_rotation.y, part_rotation.z)
+    ghost.basis = part_basis
     ghost_root.add_child(ghost)
 
 func _place_current_part() -> void:
@@ -752,9 +799,9 @@ func _place_current_part() -> void:
 
     var part := PartFactory.create_part(selected_part, colors, false)
     part.position = _cursor_world_position()
-    part.rotation_degrees = Vector3(part_rotation.x, part_rotation.y, part_rotation.z)
+    part.basis = part_basis
     part.set_meta("grid_position", key)
-    part.set_meta("rotation_steps", part_rotation)
+    part.set_meta("rotation_basis", part_basis)
     placed_root.add_child(part)
     placed_parts[key] = part
 
