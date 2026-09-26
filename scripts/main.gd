@@ -304,7 +304,7 @@ func _build_touch_controls() -> void:
         &"builder_left": left,
         &"builder_right": right,
     }
-    _apply_rotation_direction_button_colors()
+    _refresh_rotation_direction_button_colors()
 
     previous_bumper = _control_button("‹", Vector2(-62, 76), Vector2(50, 40))
     next_bumper = _control_button("›", Vector2(202, 76), Vector2(50, 40))
@@ -382,6 +382,7 @@ func _apply_theme() -> void:
         world_environment.environment.background_color = palette["background"].darkened(0.18 if dark else 0.02)
         world_environment.environment.ambient_light_color = Color(0.70, 0.78, 0.94) if dark else Color(0.82, 0.86, 0.94)
     _rebuild_grid()
+    _refresh_rotation_direction_button_colors()
 
 func _refresh_controls_visibility() -> void:
     if controls_root == null:
@@ -697,6 +698,7 @@ func _set_parts_open(value: bool) -> void:
     if value:
         _refresh_color_controls()
     _refresh_part_action_label()
+    _refresh_rotation_direction_button_colors()
     _refresh_ghost()
     _refresh_selection_highlight()
     _refresh_rotation_guide()
@@ -738,10 +740,21 @@ func _rotation_direction_color(action: StringName) -> Color:
         _:
             return Color.WHITE
 
-func _apply_rotation_direction_button_colors() -> void:
+func _refresh_rotation_direction_button_colors() -> void:
+    var rotation_mode := parts_open and not PartFactory.is_color_tool(selected_part)
+
     for action in dpad_direction_buttons:
         var button := dpad_direction_buttons[action] as Button
         if button == null:
+            continue
+
+        # Outside the parts drawer the D-pad is navigation, so it should look
+        # exactly like a normal control with no rotation color coding.
+        if not rotation_mode:
+            for style_name in ["normal", "hover", "pressed"]:
+                button.remove_theme_stylebox_override(style_name)
+            for color_name in ["font_color", "font_hover_color", "font_pressed_color"]:
+                button.remove_theme_color_override(color_name)
             continue
 
         var color := _rotation_direction_color(action)
@@ -780,31 +793,66 @@ func _refresh_rotation_guide() -> void:
     var cell_min := Vector3(float(cursor.x), float(cursor.z), float(cursor.y))
     var cell_max := cell_min + Vector3.ONE
     var center := (cell_min + cell_max) * 0.5
+
+    # The four colors describe the part's LOCAL rotation directions. As the part
+    # rotates, those local directions rotate with it, so the colored cell faces
+    # update to show what each D-pad arrow now means. Camera orientation never
+    # participates in this calculation.
+    var local_directions := {
+        &"builder_up": Vector3(0.0, 0.0, -1.0),
+        &"builder_down": Vector3(0.0, 0.0, 1.0),
+        &"builder_left": Vector3(-1.0, 0.0, 0.0),
+        &"builder_right": Vector3(1.0, 0.0, 0.0),
+    }
+
+    for action in local_directions:
+        var world_direction := part_basis * (local_directions[action] as Vector3)
+        _add_rotation_face_for_direction(
+            center,
+            cell_min,
+            cell_max,
+            world_direction,
+            _rotation_direction_color(action)
+        )
+
+func _add_rotation_face_for_direction(
+    center: Vector3,
+    cell_min: Vector3,
+    cell_max: Vector3,
+    direction: Vector3,
+    color: Color
+) -> void:
     var inset := 0.018
     var thickness := 0.018
+    var axis := 0
 
-    # The guide is fixed to world/grid directions just like part rotation.
-    # Each D-pad direction gets a matching faint cell wall.
-    _add_rotation_wall(
-        Vector3(center.x, center.y, cell_min.z + inset),
-        Vector3(0.96, 0.96, thickness),
-        _rotation_direction_color(&"builder_up")
-    )
-    _add_rotation_wall(
-        Vector3(center.x, center.y, cell_max.z - inset),
-        Vector3(0.96, 0.96, thickness),
-        _rotation_direction_color(&"builder_down")
-    )
-    _add_rotation_wall(
-        Vector3(cell_min.x + inset, center.y, center.z),
-        Vector3(thickness, 0.96, 0.96),
-        _rotation_direction_color(&"builder_left")
-    )
-    _add_rotation_wall(
-        Vector3(cell_max.x - inset, center.y, center.z),
-        Vector3(thickness, 0.96, 0.96),
-        _rotation_direction_color(&"builder_right")
-    )
+    if absf(direction.y) > absf(direction.x) and absf(direction.y) >= absf(direction.z):
+        axis = 1
+    elif absf(direction.z) > absf(direction.x):
+        axis = 2
+
+    match axis:
+        0:
+            var x := cell_max.x - inset if direction.x >= 0.0 else cell_min.x + inset
+            _add_rotation_wall(
+                Vector3(x, center.y, center.z),
+                Vector3(thickness, 0.96, 0.96),
+                color
+            )
+        1:
+            var y := cell_max.y - inset if direction.y >= 0.0 else cell_min.y + inset
+            _add_rotation_wall(
+                Vector3(center.x, y, center.z),
+                Vector3(0.96, thickness, 0.96),
+                color
+            )
+        2:
+            var z := cell_max.z - inset if direction.z >= 0.0 else cell_min.z + inset
+            _add_rotation_wall(
+                Vector3(center.x, center.y, z),
+                Vector3(0.96, 0.96, thickness),
+                color
+            )
 
 func _add_rotation_wall(position_value: Vector3, size_value: Vector3, color: Color) -> void:
     var mesh := BoxMesh.new()
@@ -863,8 +911,9 @@ func _camera_relative_grid_direction(action: StringName) -> Vector2i:
     return Vector2i(0, 1 if world_direction.z >= 0.0 else -1)
 
 func _rotate_part_fixed(action: StringName) -> void:
-    # Fixed rotation mapping, independent of camera orientation. This restores
-    # the original builder behavior while retaining Basis-based 90-degree turns.
+    # Rotation is relative to the part's current local axes, never the camera.
+    # Right-multiplication is intentional: once the part turns, its next
+    # up/down/left/right rotations follow that new local orientation.
     var axis := Vector3.ZERO
     var degrees := 0.0
 
@@ -885,7 +934,7 @@ func _rotate_part_fixed(action: StringName) -> void:
             return
 
     var turn := Basis(axis, deg_to_rad(degrees))
-    part_basis = (turn * part_basis).orthonormalized()
+    part_basis = (part_basis * turn).orthonormalized()
 
 func _change_level(delta: int) -> void:
     if parts_open:
@@ -909,6 +958,8 @@ func _cycle_part(delta: int) -> void:
     _rebuild_part_cards()
     _refresh_color_controls()
     _refresh_part_action_label()
+    _refresh_rotation_direction_button_colors()
+    _refresh_rotation_guide()
 
 func _select_part(index: int) -> void:
     selected_part = clampi(index, 0, PartFactory.part_count() - 1)
@@ -919,6 +970,8 @@ func _select_part(index: int) -> void:
     _rebuild_part_cards()
     _refresh_color_controls()
     _refresh_part_action_label()
+    _refresh_rotation_direction_button_colors()
+    _refresh_rotation_guide()
 
 func _refresh_part_action_label() -> void:
     if place_button == null:
