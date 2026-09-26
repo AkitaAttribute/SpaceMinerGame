@@ -23,7 +23,6 @@ var grid_root: Node3D
 var placed_root: Node3D
 var ghost_root: Node3D
 var selection_highlight_root: Node3D
-var selection_outline_shader: Shader
 var cursor := Vector3i(0, 0, 0)
 var selected_part := 0
 var part_basis := Basis.IDENTITY
@@ -1018,67 +1017,219 @@ func _refresh_selection_highlight() -> void:
         _add_cube_cell_highlight(cursor)
         return
 
+    # Non-cube parts use their actual geometric edges instead of an expanded
+    # outline shell. The old shell approach could expose whole yellow faces on
+    # slopes/cones depending on winding and view angle.
     var cell_min := Vector3(float(cursor.x), float(cursor.z), float(cursor.y))
     var cell_max := cell_min + Vector3.ONE
-    var epsilon := Vector3.ONE * 0.003
-    _clone_outline_meshes(target, cell_min - epsilon, cell_max + epsilon)
+    var epsilon := Vector3.ONE * 0.004
+    _add_mesh_edge_highlights(target, cell_min - epsilon, cell_max + epsilon)
 
-func _clone_outline_meshes(source: Node, cell_min: Vector3, cell_max: Vector3) -> void:
+func _add_mesh_edge_highlights(source: Node, cell_min: Vector3, cell_max: Vector3) -> void:
     if source is MeshInstance3D:
         var source_mesh := source as MeshInstance3D
         if source_mesh.mesh != null:
-            var outline := MeshInstance3D.new()
-            outline.mesh = source_mesh.mesh
-            outline.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-            selection_highlight_root.add_child(outline)
-            outline.global_transform = source_mesh.global_transform
-
-            var material := ShaderMaterial.new()
-            material.shader = _get_selection_outline_shader()
-            material.set_shader_parameter("outline_color", AppSettings.highlight_color)
-            material.set_shader_parameter("cell_min", cell_min)
-            material.set_shader_parameter("cell_max", cell_max)
-            outline.material_override = material
+            _add_mesh_instance_edges(source_mesh, cell_min, cell_max)
 
     for child in source.get_children():
-        _clone_outline_meshes(child, cell_min, cell_max)
+        _add_mesh_edge_highlights(child, cell_min, cell_max)
 
-func _get_selection_outline_shader() -> Shader:
-    if selection_outline_shader != null:
-        return selection_outline_shader
+func _add_mesh_instance_edges(
+    source_mesh: MeshInstance3D,
+    cell_min: Vector3,
+    cell_max: Vector3
+) -> void:
+    var mesh := source_mesh.mesh
+    var edges: Dictionary = {}
 
-    selection_outline_shader = Shader.new()
-    selection_outline_shader.code = """
-shader_type spatial;
-render_mode unshaded, cull_front;
+    for surface_index in range(mesh.get_surface_count()):
+        var arrays := mesh.surface_get_arrays(surface_index)
+        if arrays.is_empty():
+            continue
 
-uniform vec4 outline_color : source_color = vec4(1.0, 0.85, 0.24, 1.0);
-uniform float outline_width = 0.035;
-uniform vec3 cell_min = vec3(-1000.0);
-uniform vec3 cell_max = vec3(1000.0);
+        var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+        if vertices.is_empty():
+            continue
 
-varying vec3 source_world_position;
+        var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+        if indices.is_empty():
+            for triangle_start in range(0, vertices.size() - 2, 3):
+                _register_triangle_edges(
+                    edges,
+                    source_mesh.global_transform * vertices[triangle_start],
+                    source_mesh.global_transform * vertices[triangle_start + 1],
+                    source_mesh.global_transform * vertices[triangle_start + 2]
+                )
+        else:
+            for triangle_start in range(0, indices.size() - 2, 3):
+                _register_triangle_edges(
+                    edges,
+                    source_mesh.global_transform * vertices[indices[triangle_start]],
+                    source_mesh.global_transform * vertices[indices[triangle_start + 1]],
+                    source_mesh.global_transform * vertices[indices[triangle_start + 2]]
+                )
 
-void vertex() {
-    source_world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-    VERTEX += NORMAL * outline_width;
-}
+    var crease_dot_limit := cos(deg_to_rad(32.0))
+    for value in edges.values():
+        var edge := value as Dictionary
+        var normals: Array = edge["normals"]
 
-void fragment() {
-    if (
-        source_world_position.x < cell_min.x
-        || source_world_position.y < cell_min.y
-        || source_world_position.z < cell_min.z
-        || source_world_position.x > cell_max.x
-        || source_world_position.y > cell_max.y
-        || source_world_position.z > cell_max.z
-    ) {
-        discard;
-    }
-    ALBEDO = outline_color.rgb;
-}
-"""
-    return selection_outline_shader
+        var should_draw := normals.size() == 1
+        if not should_draw:
+            for first_index in range(normals.size()):
+                if should_draw:
+                    break
+                var first_normal := normals[first_index] as Vector3
+                for second_index in range(first_index + 1, normals.size()):
+                    var second_normal := normals[second_index] as Vector3
+                    if first_normal.dot(second_normal) < crease_dot_limit:
+                        should_draw = true
+                        break
+
+        if not should_draw:
+            continue
+
+        var clipped := _clip_segment_to_cell(
+            edge["a"] as Vector3,
+            edge["b"] as Vector3,
+            cell_min,
+            cell_max
+        )
+        if clipped.size() == 2:
+            _add_highlight_segment(clipped[0], clipped[1])
+
+func _register_triangle_edges(
+    edges: Dictionary,
+    a: Vector3,
+    b: Vector3,
+    c: Vector3
+) -> void:
+    var cross := (b - a).cross(c - a)
+    if cross.length_squared() < 0.0000001:
+        return
+
+    var face_normal := cross.normalized()
+    _register_highlight_edge(edges, a, b, face_normal)
+    _register_highlight_edge(edges, b, c, face_normal)
+    _register_highlight_edge(edges, c, a, face_normal)
+
+func _register_highlight_edge(
+    edges: Dictionary,
+    a: Vector3,
+    b: Vector3,
+    face_normal: Vector3
+) -> void:
+    if a.distance_squared_to(b) < 0.0000001:
+        return
+
+    var a_key := _highlight_vertex_key(a)
+    var b_key := _highlight_vertex_key(b)
+    var key := a_key + "|" + b_key if a_key < b_key else b_key + "|" + a_key
+
+    if not edges.has(key):
+        edges[key] = {
+            "a": a,
+            "b": b,
+            "normals": [face_normal],
+        }
+        return
+
+    var edge := edges[key] as Dictionary
+    var normals: Array = edge["normals"]
+    normals.append(face_normal)
+    edge["normals"] = normals
+    edges[key] = edge
+
+func _highlight_vertex_key(value: Vector3) -> String:
+    # Welding duplicate triangle vertices is necessary because the procedural
+    # meshes are intentionally unindexed. The precision is far tighter than any
+    # construction-grid movement.
+    return "%d,%d,%d" % [
+        int(round(value.x * 10000.0)),
+        int(round(value.y * 10000.0)),
+        int(round(value.z * 10000.0)),
+    ]
+
+func _clip_segment_to_cell(
+    a: Vector3,
+    b: Vector3,
+    cell_min: Vector3,
+    cell_max: Vector3
+) -> PackedVector3Array:
+    var direction := b - a
+    var t_min := 0.0
+    var t_max := 1.0
+
+    for axis in range(3):
+        var origin := _vector_component(a, axis)
+        var delta := _vector_component(direction, axis)
+        var min_value := _vector_component(cell_min, axis)
+        var max_value := _vector_component(cell_max, axis)
+
+        if absf(delta) < 0.000001:
+            if origin < min_value or origin > max_value:
+                return PackedVector3Array()
+            continue
+
+        var t1 := (min_value - origin) / delta
+        var t2 := (max_value - origin) / delta
+        if t1 > t2:
+            var swap := t1
+            t1 = t2
+            t2 = swap
+
+        t_min = maxf(t_min, t1)
+        t_max = minf(t_max, t2)
+        if t_min > t_max:
+            return PackedVector3Array()
+
+    return PackedVector3Array([
+        a + direction * t_min,
+        a + direction * t_max,
+    ])
+
+func _vector_component(value: Vector3, axis: int) -> float:
+    match axis:
+        0:
+            return value.x
+        1:
+            return value.y
+        _:
+            return value.z
+
+func _add_highlight_segment(a: Vector3, b: Vector3) -> void:
+    var direction := b - a
+    var length := direction.length()
+    if length < 0.006:
+        return
+
+    var y_axis := direction / length
+    var helper := Vector3.UP
+    if absf(y_axis.dot(helper)) > 0.96:
+        helper = Vector3.RIGHT
+    var x_axis := helper.cross(y_axis).normalized()
+    var z_axis := x_axis.cross(y_axis).normalized()
+
+    var mesh := CylinderMesh.new()
+    mesh.height = length
+    mesh.top_radius = 0.017
+    mesh.bottom_radius = 0.017
+    mesh.radial_segments = 8
+    mesh.rings = 1
+
+    var material := StandardMaterial3D.new()
+    material.albedo_color = AppSettings.highlight_color
+    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+
+    var instance := MeshInstance3D.new()
+    instance.mesh = mesh
+    instance.material_override = material
+    instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    instance.global_transform = Transform3D(
+        Basis(x_axis, y_axis, z_axis),
+        (a + b) * 0.5
+    )
+    selection_highlight_root.add_child(instance)
 
 func _add_cube_cell_highlight(cell: Vector3i) -> void:
     var cell_min := Vector3(float(cell.x), float(cell.z), float(cell.y))
