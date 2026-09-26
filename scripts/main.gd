@@ -806,28 +806,95 @@ func _refresh_rotation_guide() -> void:
     var cell_min := Vector3(float(cursor.x), float(cursor.z), float(cursor.y))
     var cell_max := cell_min + Vector3.ONE
     var center := (cell_min + cell_max) * 0.5
+    var reference_local := PartFactory.rotation_reference_normal(selected_part)
+    var reference_world := (part_basis * reference_local).normalized()
 
-    # The four colors describe the part's LOCAL rotation directions. As the part
-    # rotates, those local directions rotate with it, so the colored cell faces
-    # update to show what each D-pad arrow now means. Camera orientation never
-    # participates in this calculation.
-    var local_directions := {
-        &"builder_up": Vector3(0.0, 0.0, -1.0),
-        &"builder_down": Vector3(0.0, 0.0, 1.0),
-        &"builder_left": Vector3(-1.0, 0.0, 0.0),
-        &"builder_right": Vector3(1.0, 0.0, 0.0),
-    }
+    # One side of every part is designated as its rotation reference side.
+    # Mark where that side currently points, then simulate the exact same Basis
+    # turn used by the real rotation code for each D-pad action. The colored
+    # face therefore means: "press this button and REF will move here."
+    _add_rotation_reference_marker(
+        center,
+        cell_min,
+        cell_max,
+        reference_world
+    )
 
-    for action in local_directions:
-        var world_direction := part_basis * (local_directions[action] as Vector3)
+    for action in [
+        &"builder_up",
+        &"builder_down",
+        &"builder_left",
+        &"builder_right",
+    ]:
+        var turn := _rotation_turn_for_action(action)
+        if turn == Basis.IDENTITY:
+            continue
+
+        var predicted_basis := (part_basis * turn).orthonormalized()
+        var predicted_reference := (predicted_basis * reference_local).normalized()
+
         _add_rotation_face_for_direction(
             center,
             cell_min,
             cell_max,
-            world_direction,
+            predicted_reference,
             _rotation_direction_color(action),
             _rotation_direction_letter(action)
         )
+
+func _add_rotation_reference_marker(
+    center: Vector3,
+    cell_min: Vector3,
+    cell_max: Vector3,
+    direction: Vector3
+) -> void:
+    var face_position := _rotation_face_position(
+        center,
+        cell_min,
+        cell_max,
+        direction,
+        0.030
+    )
+
+    var label := Label3D.new()
+    label.text = "REF"
+    label.font_size = 48
+    label.pixel_size = 0.005
+    label.modulate = Color(1.0, 1.0, 1.0, 0.72)
+    label.outline_modulate = Color(0.0, 0.0, 0.0, 0.65)
+    label.outline_size = 8
+    label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+    label.no_depth_test = true
+    label.render_priority = 3
+    label.position = face_position + direction.normalized() * 0.045
+    rotation_guide_root.add_child(label)
+
+func _rotation_face_position(
+    center: Vector3,
+    cell_min: Vector3,
+    cell_max: Vector3,
+    direction: Vector3,
+    inset: float
+) -> Vector3:
+    if absf(direction.y) > absf(direction.x) and absf(direction.y) >= absf(direction.z):
+        return Vector3(
+            center.x,
+            cell_max.y - inset if direction.y >= 0.0 else cell_min.y + inset,
+            center.z
+        )
+
+    if absf(direction.z) > absf(direction.x):
+        return Vector3(
+            center.x,
+            center.y,
+            cell_max.z - inset if direction.z >= 0.0 else cell_min.z + inset
+        )
+
+    return Vector3(
+        cell_max.x - inset if direction.x >= 0.0 else cell_min.x + inset,
+        center.y,
+        center.z
+    )
 
 func _add_rotation_face_for_direction(
     center: Vector3,
@@ -839,39 +906,32 @@ func _add_rotation_face_for_direction(
 ) -> void:
     var inset := 0.018
     var thickness := 0.018
-    var axis := 0
-    var face_position := center
+    var face_position := _rotation_face_position(
+        center,
+        cell_min,
+        cell_max,
+        direction,
+        inset
+    )
 
     if absf(direction.y) > absf(direction.x) and absf(direction.y) >= absf(direction.z):
-        axis = 1
+        _add_rotation_wall(
+            face_position,
+            Vector3(0.96, thickness, 0.96),
+            color
+        )
     elif absf(direction.z) > absf(direction.x):
-        axis = 2
-
-    match axis:
-        0:
-            var x := cell_max.x - inset if direction.x >= 0.0 else cell_min.x + inset
-            face_position = Vector3(x, center.y, center.z)
-            _add_rotation_wall(
-                face_position,
-                Vector3(thickness, 0.96, 0.96),
-                color
-            )
-        1:
-            var y := cell_max.y - inset if direction.y >= 0.0 else cell_min.y + inset
-            face_position = Vector3(center.x, y, center.z)
-            _add_rotation_wall(
-                face_position,
-                Vector3(0.96, thickness, 0.96),
-                color
-            )
-        2:
-            var z := cell_max.z - inset if direction.z >= 0.0 else cell_min.z + inset
-            face_position = Vector3(center.x, center.y, z)
-            _add_rotation_wall(
-                face_position,
-                Vector3(0.96, 0.96, thickness),
-                color
-            )
+        _add_rotation_wall(
+            face_position,
+            Vector3(0.96, 0.96, thickness),
+            color
+        )
+    else:
+        _add_rotation_wall(
+            face_position,
+            Vector3(thickness, 0.96, 0.96),
+            color
+        )
 
     _add_rotation_wall_letter(face_position, direction, color, letter)
 
@@ -954,30 +1014,27 @@ func _camera_relative_grid_direction(action: StringName) -> Vector2i:
         return Vector2i(1 if world_direction.x >= 0.0 else -1, 0)
     return Vector2i(0, 1 if world_direction.z >= 0.0 else -1)
 
-func _rotate_part_fixed(action: StringName) -> void:
-    # Rotation is relative to the part's current local axes, never the camera.
-    # Right-multiplication is intentional: once the part turns, its next
-    # up/down/left/right rotations follow that new local orientation.
-    var axis := Vector3.ZERO
-    var degrees := 0.0
-
+func _rotation_turn_for_action(action: StringName) -> Basis:
     match action:
         &"builder_up":
-            axis = Vector3.RIGHT
-            degrees = -90.0
+            return Basis(Vector3.RIGHT, deg_to_rad(-90.0))
         &"builder_down":
-            axis = Vector3.RIGHT
-            degrees = 90.0
+            return Basis(Vector3.RIGHT, deg_to_rad(90.0))
         &"builder_left":
-            axis = Vector3.UP
-            degrees = -90.0
+            return Basis(Vector3.UP, deg_to_rad(-90.0))
         &"builder_right":
-            axis = Vector3.UP
-            degrees = 90.0
+            return Basis(Vector3.UP, deg_to_rad(90.0))
         _:
-            return
+            return Basis.IDENTITY
 
-    var turn := Basis(axis, deg_to_rad(degrees))
+func _rotate_part_fixed(action: StringName) -> void:
+    # Rotation remains local to the part and independent of camera orientation.
+    # The guide calls the same helper before the turn, so its U/D/L/R faces are
+    # a direct preview of where the designated REF side will actually move.
+    var turn := _rotation_turn_for_action(action)
+    if turn == Basis.IDENTITY:
+        return
+
     part_basis = (part_basis * turn).orthonormalized()
 
 func _change_level(delta: int) -> void:
