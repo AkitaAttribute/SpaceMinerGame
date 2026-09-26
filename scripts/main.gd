@@ -1057,8 +1057,8 @@ func _refresh_selection_highlight() -> void:
         return
 
     if part_id == "half_sphere":
-        _add_half_sphere_rim_highlight(target)
-        AppLogger.event("HIGHLIGHT complete part=half_sphere mode=explicit_rim")
+        _add_rounded_surface_highlight(target)
+        AppLogger.event("HIGHLIGHT complete part=half_sphere mode=surface_overlay")
         return
 
     # Non-cube parts use their actual geometric edges instead of an expanded
@@ -1357,38 +1357,37 @@ func _add_highlight_segments(transforms: Array[Transform3D]) -> void:
     instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     selection_highlight_root.add_child(instance)
 
-func _add_half_sphere_rim_highlight(target: Node3D) -> void:
-    # A hemisphere is smooth everywhere except the circular mounting rim.
-    # Deriving that rim from triangle crease angles made the highlight sit
-    # directly on the mesh and disappear unevenly behind the dome. Draw the
-    # intended perimeter explicitly, just outside the physical rim.
-    const SEGMENTS := 48
-    const RADIUS := 0.518
-    const PLANE_Y := -0.492
+func _add_rounded_surface_highlight(target: Node3D) -> void:
+    # Rounded parts do not have a useful small set of silhouette/crease edges.
+    # Highlight the full visible exterior instead. A very small scale expansion
+    # keeps the overlay from z-fighting with the original surface.
+    _clone_rounded_highlight_meshes(target)
 
-    var transforms: Array[Transform3D] = []
-    for segment in range(SEGMENTS):
-        var angle_a := TAU * float(segment) / float(SEGMENTS)
-        var angle_b := TAU * float(segment + 1) / float(SEGMENTS)
+func _clone_rounded_highlight_meshes(source: Node) -> void:
+    if source is MeshInstance3D:
+        var source_mesh := source as MeshInstance3D
+        if source_mesh.mesh != null:
+            var overlay := MeshInstance3D.new()
+            overlay.mesh = source_mesh.mesh
+            overlay.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
-        var local_a := Vector3(
-            cos(angle_a) * RADIUS,
-            PLANE_Y,
-            sin(angle_a) * RADIUS
-        )
-        var local_b := Vector3(
-            cos(angle_b) * RADIUS,
-            PLANE_Y,
-            sin(angle_b) * RADIUS
-        )
+            var material := StandardMaterial3D.new()
+            var highlight := AppSettings.highlight_color
+            highlight.a = 0.34
+            material.albedo_color = highlight
+            material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+            material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+            material.cull_mode = BaseMaterial3D.CULL_DISABLED
+            overlay.material_override = material
 
-        var world_a := target.global_transform * local_a
-        var world_b := target.global_transform * local_b
-        var transform := _highlight_segment_transform(world_a, world_b)
-        if transform != Transform3D():
-            transforms.append(transform)
+            selection_highlight_root.add_child(overlay)
 
-    _add_highlight_segments(transforms)
+            var expanded := source_mesh.global_transform
+            expanded.basis = expanded.basis.scaled(Vector3.ONE * 1.018)
+            overlay.global_transform = expanded
+
+    for child in source.get_children():
+        _clone_rounded_highlight_meshes(child)
 
 func _add_cube_cell_highlight(cell: Vector3i) -> void:
     var cell_min := Vector3(float(cell.x), float(cell.z), float(cell.y))
