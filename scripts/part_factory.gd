@@ -223,7 +223,16 @@ static func _add_thruster_tier_2(root: Node3D, colors: Array[Color], ghost: bool
         Vector2(0.28, 0.40),
         Vector2(0.50, 0.18),
     ])
-    _add_mesh(root, _profiled_solid_mesh(fuel_profile), colors[1], ghost, 1)
+    _add_mesh(
+        root,
+        _profiled_solid_mesh(fuel_profile, 32),
+        colors[1],
+        ghost,
+        1,
+        Vector3.ZERO,
+        Vector3.ZERO,
+        true
+    )
 
     # Cell two is the colored full-cell hollow nozzle. The narrow end is flush
     # against the fuel body at z=0.5 and the open mouth reaches z=1.5.
