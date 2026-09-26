@@ -85,22 +85,18 @@ func _build_world() -> void:
     environment.background_mode = Environment.BG_COLOR
     environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
     environment.ambient_light_color = Color(0.72, 0.79, 0.92)
-    environment.ambient_light_energy = 0.72
+    environment.ambient_light_energy = 0.24
     environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
     world_environment.environment = environment
     add_child(world_environment)
 
     var key_light := DirectionalLight3D.new()
     key_light.rotation_degrees = Vector3(-48.0, -32.0, 0.0)
-    key_light.light_energy = 1.15
-    key_light.shadow_enabled = true
+    key_light.light_energy = 0.95
+    # Construction mode deliberately uses shadow-free lighting. Geometry should
+    # remain readable while orbiting without dark cast shadows obscuring cells.
+    key_light.shadow_enabled = false
     add_child(key_light)
-
-    var fill_light := OmniLight3D.new()
-    fill_light.position = Vector3(-5.0, 5.0, 5.0)
-    fill_light.omni_range = 20.0
-    fill_light.light_energy = 1.4
-    add_child(fill_light)
 
 func _build_scene_nodes() -> void:
     grid_root = Node3D.new()
