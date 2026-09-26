@@ -1082,25 +1082,42 @@ func _add_mesh_instance_edges(
     var mesh := source_mesh.mesh
     var edges: Dictionary = {}
 
+    AppLogger.event(
+        "HIGHLIGHT mesh scan begin name=%s surfaces=%d class=%s" % [
+            source_mesh.name,
+            mesh.get_surface_count(),
+            mesh.get_class(),
+        ]
+    )
+
     for surface_index in range(mesh.get_surface_count()):
+        AppLogger.event(
+            "HIGHLIGHT reading surface mesh=%s surface=%d" % [
+                source_mesh.name,
+                surface_index,
+            ]
+        )
+
         var arrays := mesh.surface_get_arrays(surface_index)
         if arrays.is_empty():
             continue
 
-        var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+        var vertex_data = arrays[Mesh.ARRAY_VERTEX]
+        if not (vertex_data is PackedVector3Array):
+            AppLogger.event(
+                "HIGHLIGHT skipped surface mesh=%s surface=%d reason=no_vertices" % [
+                    source_mesh.name,
+                    surface_index,
+                ]
+            )
+            continue
+        var vertices := vertex_data as PackedVector3Array
         if vertices.is_empty():
             continue
 
-        var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
-        if indices.is_empty():
-            for triangle_start in range(0, vertices.size() - 2, 3):
-                _register_triangle_edges(
-                    edges,
-                    source_mesh.global_transform * vertices[triangle_start],
-                    source_mesh.global_transform * vertices[triangle_start + 1],
-                    source_mesh.global_transform * vertices[triangle_start + 2]
-                )
-        else:
+        var index_data = arrays[Mesh.ARRAY_INDEX]
+        if index_data is PackedInt32Array and not (index_data as PackedInt32Array).is_empty():
+            var indices := index_data as PackedInt32Array
             for triangle_start in range(0, indices.size() - 2, 3):
                 _register_triangle_edges(
                     edges,
@@ -1108,9 +1125,24 @@ func _add_mesh_instance_edges(
                     source_mesh.global_transform * vertices[indices[triangle_start + 1]],
                     source_mesh.global_transform * vertices[indices[triangle_start + 2]]
                 )
+        else:
+            for triangle_start in range(0, vertices.size() - 2, 3):
+                _register_triangle_edges(
+                    edges,
+                    source_mesh.global_transform * vertices[triangle_start],
+                    source_mesh.global_transform * vertices[triangle_start + 1],
+                    source_mesh.global_transform * vertices[triangle_start + 2]
+                )
+
+    AppLogger.event(
+        "HIGHLIGHT topology collected mesh=%s unique_edges=%d" % [
+            source_mesh.name,
+            edges.size(),
+        ]
+    )
 
     var crease_dot_limit := cos(deg_to_rad(32.0))
-    var drawn_edges := 0
+    var segment_transforms: Array[Transform3D] = []
     const MAX_HIGHLIGHT_EDGES := 512
 
     for value in edges.values():
@@ -1141,7 +1173,7 @@ func _add_mesh_instance_edges(
         if clipped.size() != 2:
             continue
 
-        if drawn_edges >= MAX_HIGHLIGHT_EDGES:
+        if segment_transforms.size() >= MAX_HIGHLIGHT_EDGES:
             AppLogger.event(
                 "HIGHLIGHT edge cap reached mesh=%s unique_edges=%d cap=%d" % [
                     source_mesh.name,
@@ -1151,15 +1183,18 @@ func _add_mesh_instance_edges(
             )
             break
 
-        _add_highlight_segment(clipped[0], clipped[1])
-        drawn_edges += 1
+        var segment_transform := _highlight_segment_transform(clipped[0], clipped[1])
+        if segment_transform != Transform3D():
+            segment_transforms.append(segment_transform)
+
+    _add_highlight_segments(segment_transforms)
 
     AppLogger.event(
         "HIGHLIGHT mesh=%s surfaces=%d unique_edges=%d drawn_edges=%d" % [
             source_mesh.name,
             mesh.get_surface_count(),
             edges.size(),
-            drawn_edges,
+            segment_transforms.size(),
         ]
     )
 
@@ -1262,11 +1297,11 @@ func _vector_component(value: Vector3, axis: int) -> float:
         _:
             return value.z
 
-func _add_highlight_segment(a: Vector3, b: Vector3) -> void:
+func _highlight_segment_transform(a: Vector3, b: Vector3) -> Transform3D:
     var direction := b - a
     var length := direction.length()
     if length < 0.006:
-        return
+        return Transform3D()
 
     var y_axis := direction / length
     var helper := Vector3.UP
@@ -1275,26 +1310,47 @@ func _add_highlight_segment(a: Vector3, b: Vector3) -> void:
     var x_axis := helper.cross(y_axis).normalized()
     var z_axis := x_axis.cross(y_axis).normalized()
 
-    var mesh := CylinderMesh.new()
-    mesh.height = length
-    mesh.top_radius = 0.017
-    mesh.bottom_radius = 0.017
-    mesh.radial_segments = 8
-    mesh.rings = 1
+    return Transform3D(
+        Basis(
+            x_axis,
+            y_axis * length,
+            z_axis
+        ),
+        (a + b) * 0.5
+    )
+
+func _add_highlight_segments(transforms: Array[Transform3D]) -> void:
+    if transforms.is_empty():
+        return
+
+    # A single MultiMesh replaces hundreds of per-edge CylinderMesh resources.
+    # The previous approach could rapidly create/destroy many rendering objects
+    # while selecting curved parts, which is exactly where the native process
+    # was terminating without a GDScript error.
+    var cylinder := CylinderMesh.new()
+    cylinder.height = 1.0
+    cylinder.top_radius = 0.017
+    cylinder.bottom_radius = 0.017
+    cylinder.radial_segments = 8
+    cylinder.rings = 1
 
     var material := StandardMaterial3D.new()
     material.albedo_color = AppSettings.highlight_color
     material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    cylinder.material = material
 
-    var instance := MeshInstance3D.new()
-    instance.mesh = mesh
-    instance.material_override = material
+    var multimesh := MultiMesh.new()
+    multimesh.transform_format = MultiMesh.TRANSFORM_3D
+    multimesh.mesh = cylinder
+    multimesh.instance_count = transforms.size()
+
+    for index in range(transforms.size()):
+        multimesh.set_instance_transform(index, transforms[index])
+
+    var instance := MultiMeshInstance3D.new()
+    instance.multimesh = multimesh
     instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     selection_highlight_root.add_child(instance)
-    instance.global_transform = Transform3D(
-        Basis(x_axis, y_axis, z_axis),
-        (a + b) * 0.5
-    )
 
 func _add_cube_cell_highlight(cell: Vector3i) -> void:
     var cell_min := Vector3(float(cell.x), float(cell.z), float(cell.y))
