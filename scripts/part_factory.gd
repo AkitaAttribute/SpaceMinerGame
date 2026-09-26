@@ -2,7 +2,7 @@ class_name PartFactory
 extends RefCounted
 
 const DEFAULT_PART_COLOR := Color("#5f83c6")
-const THRUST_OPENING_COLOR := Color("#171a20")
+const FUEL_BODY_COLOR := Color("#25282f")
 
 const PARTS := [
     {
@@ -51,15 +51,15 @@ const PARTS := [
     {
         "id": "thruster_t1",
         "name": "Tier 1 Thruster",
-        "slots": ["Body", "Thrust Opening"],
-        "defaults": [DEFAULT_PART_COLOR, THRUST_OPENING_COLOR],
+        "slots": ["Thruster"],
+        "defaults": [DEFAULT_PART_COLOR],
         "functional": true,
     },
     {
         "id": "thruster_t2",
         "name": "Tier 2 Thruster",
-        "slots": ["Body", "Thrust Opening"],
-        "defaults": [DEFAULT_PART_COLOR, THRUST_OPENING_COLOR],
+        "slots": ["Thruster", "Fuel Body"],
+        "defaults": [DEFAULT_PART_COLOR, FUEL_BODY_COLOR],
         "functional": true,
     },
 ]
@@ -138,7 +138,8 @@ static func apply_colors(root: Node, colors: Array[Color], ghost := false) -> vo
         if instance.has_meta("color_slot"):
             var slot := int(instance.get_meta("color_slot"))
             if slot >= 0 and slot < colors.size():
-                instance.material_override = _material(colors[slot], ghost)
+                var double_sided := bool(instance.get_meta("double_sided", false))
+                instance.material_override = _material(colors[slot], ghost, double_sided)
     for child in root.get_children():
         apply_colors(child, colors, ghost)
 
@@ -160,15 +161,17 @@ static func _add_mesh(
     ghost: bool,
     color_slot: int,
     position_value := Vector3.ZERO,
-    rotation_degrees_value := Vector3.ZERO
+    rotation_degrees_value := Vector3.ZERO,
+    double_sided := false
 ) -> MeshInstance3D:
     var instance := MeshInstance3D.new()
     instance.mesh = mesh
     instance.position = position_value
     instance.rotation_degrees = rotation_degrees_value
-    instance.material_override = _material(color, ghost)
+    instance.material_override = _material(color, ghost, double_sided)
     instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     instance.set_meta("color_slot", color_slot)
+    instance.set_meta("double_sided", double_sided)
     root.add_child(instance)
     return instance
 
@@ -198,33 +201,43 @@ static func _add_roof(root: Node3D, colors: Array[Color], ghost: bool) -> void:
     )
 
 static func _add_thruster_tier_1(root: Node3D, colors: Array[Color], ghost: bool) -> void:
-    # Half-cell truncated nozzle. The broad end is open and the dark inset is
-    # recessed so it reads as a thrust opening rather than a painted disk.
-    var shell := _hollow_frustum_mesh(0.0, 0.48, 0.22, 0.46, 0.145, 0.365)
-    _add_mesh(root, shell, colors[0], ghost, 0)
-
-    var opening := _inward_tube_mesh(0.10, 0.44, 0.18)
-    _add_mesh(root, opening, colors[1], ghost, 1)
+    # Tier 1 is only the nozzle. It occupies the rear half of one cell:
+    # the narrow side sits flush on the -Z cell wall and the broad open side
+    # ends at the cell center. There is no fuel body and no second color region.
+    var shell := _hollow_frustum_mesh(
+        -0.50,
+        0.00,
+        0.18,
+        0.46,
+        0.075,
+        0.33
+    )
+    _add_mesh(root, shell, colors[0], ghost, 0, Vector3.ZERO, Vector3.ZERO, true)
 
 static func _add_thruster_tier_2(root: Node3D, colors: Array[Color], ghost: bool) -> void:
-    # Cell one is a compact <=> fuel body.
+    # Cell one is the dark fuel body: a cylinder with tapered ends, <=>.
+    # It spans the entire anchor cell and joins the nozzle at the +Z wall.
     var fuel_profile := PackedVector2Array([
-        Vector2(-0.46, 0.22),
-        Vector2(-0.26, 0.40),
-        Vector2(0.26, 0.40),
-        Vector2(0.46, 0.22),
+        Vector2(-0.50, 0.18),
+        Vector2(-0.28, 0.40),
+        Vector2(0.28, 0.40),
+        Vector2(0.50, 0.18),
     ])
-    _add_mesh(root, _profiled_solid_mesh(fuel_profile), colors[0], ghost, 0)
+    _add_mesh(root, _profiled_solid_mesh(fuel_profile), colors[1], ghost, 1)
 
-    # Cell two is a full-cell truncated nozzle, giving the complete part a
-    # two-cell footprint along local +Z.
-    var shell := _hollow_frustum_mesh(0.50, 1.48, 0.22, 0.46, 0.145, 0.365)
-    _add_mesh(root, shell, colors[0], ghost, 0)
+    # Cell two is the colored full-cell hollow nozzle. The narrow end is flush
+    # against the fuel body at z=0.5 and the open mouth reaches z=1.5.
+    var shell := _hollow_frustum_mesh(
+        0.50,
+        1.50,
+        0.18,
+        0.46,
+        0.075,
+        0.33
+    )
+    _add_mesh(root, shell, colors[0], ghost, 0, Vector3.ZERO, Vector3.ZERO, true)
 
-    var opening := _inward_tube_mesh(0.72, 1.43, 0.19)
-    _add_mesh(root, opening, colors[1], ghost, 1)
-
-static func _material(color: Color, ghost: bool) -> StandardMaterial3D:
+static func _material(color: Color, ghost: bool, double_sided := false) -> StandardMaterial3D:
     var material := StandardMaterial3D.new()
     var final_color := color
     if ghost:
@@ -233,6 +246,11 @@ static func _material(color: Color, ghost: bool) -> StandardMaterial3D:
     material.albedo_color = final_color
     material.metallic = 0.0
     material.roughness = 0.82
+    if double_sided:
+        # Hollow thrusters have intentionally visible inner and outer walls.
+        # Disabling culling prevents the shell from disappearing at grazing
+        # angles while the explicit inner shell/rims still provide real thickness.
+        material.cull_mode = BaseMaterial3D.CULL_DISABLED
     return material
 
 static func _pyramid_mesh() -> ArrayMesh:
@@ -375,24 +393,6 @@ static func _hollow_frustum_mesh(
         # reading as a zero-thickness cone.
         vertices.append_array(PackedVector3Array([o00, i01, o01, o00, i00, i01]))
         vertices.append_array(PackedVector3Array([o10, o11, i11, o10, i11, i10]))
-
-    return _mesh_from_triangles(vertices)
-
-static func _inward_tube_mesh(z0: float, z1: float, radius: float, segments := 24) -> ArrayMesh:
-    var vertices := PackedVector3Array()
-    for segment in range(segments):
-        var phi0 := TAU * float(segment) / float(segments)
-        var phi1 := TAU * float(segment + 1) / float(segments)
-        var a0 := Vector3(cos(phi0) * radius, sin(phi0) * radius, z0)
-        var a1 := Vector3(cos(phi1) * radius, sin(phi1) * radius, z0)
-        var b0 := Vector3(cos(phi0) * radius, sin(phi0) * radius, z1)
-        var b1 := Vector3(cos(phi1) * radius, sin(phi1) * radius, z1)
-
-        # Reversed winding makes the inside wall visible from the open end.
-        vertices.append_array(PackedVector3Array([a0, b1, a1, a0, b0, b1]))
-
-        # Only the deep end is capped. The broad end stays open.
-        vertices.append_array(PackedVector3Array([Vector3(0.0, 0.0, z0), a0, a1]))
 
     return _mesh_from_triangles(vertices)
 
