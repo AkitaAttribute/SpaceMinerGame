@@ -23,6 +23,7 @@ var grid_root: Node3D
 var placed_root: Node3D
 var ghost_root: Node3D
 var selection_highlight_root: Node3D
+var rotation_guide_root: Node3D
 var cursor := Vector3i(0, 0, 0)
 var selected_part := 0
 var part_basis := Basis.IDENTITY
@@ -45,6 +46,7 @@ var level_label: Label
 var controls_root: Control
 var dpad_root: Control
 var vertical_controls_root: Control
+var dpad_direction_buttons: Dictionary = {}
 var previous_bumper: Button
 var next_bumper: Button
 var gear_button: Button
@@ -121,6 +123,10 @@ func _build_scene_nodes() -> void:
     selection_highlight_root = Node3D.new()
     selection_highlight_root.name = "SelectionHighlight"
     add_child(selection_highlight_root)
+
+    rotation_guide_root = Node3D.new()
+    rotation_guide_root.name = "RotationGuide"
+    add_child(rotation_guide_root)
 
     camera = Camera3D.new()
     camera.name = "OrbitCamera"
@@ -291,6 +297,14 @@ func _build_touch_controls() -> void:
     left.pressed.connect(func(): _perform_dpad(&"builder_left"))
     right.pressed.connect(func(): _perform_dpad(&"builder_right"))
     center.pressed.connect(_place_current_part)
+
+    dpad_direction_buttons = {
+        &"builder_up": up,
+        &"builder_down": down,
+        &"builder_left": left,
+        &"builder_right": right,
+    }
+    _apply_rotation_direction_button_colors()
 
     previous_bumper = _control_button("‹", Vector2(-62, 76), Vector2(50, 40))
     next_bumper = _control_button("›", Vector2(202, 76), Vector2(50, 40))
@@ -685,6 +699,7 @@ func _set_parts_open(value: bool) -> void:
     _refresh_part_action_label()
     _refresh_ghost()
     _refresh_selection_highlight()
+    _refresh_rotation_guide()
 
 func _perform_dpad(action: StringName) -> void:
     if parts_open:
@@ -693,6 +708,7 @@ func _perform_dpad(action: StringName) -> void:
         if not PartFactory.is_color_tool(selected_part):
             _rotate_part_fixed(action)
             _refresh_ghost()
+            _refresh_rotation_guide()
         return
 
     # Placement/navigation remains camera-relative so left/right/up/down still
@@ -708,6 +724,104 @@ func _perform_dpad(action: StringName) -> void:
     if PartFactory.is_color_tool(selected_part):
         _refresh_color_controls()
     _update_level_label()
+
+func _rotation_direction_color(action: StringName) -> Color:
+    match action:
+        &"builder_up":
+            return Color("#55d6ff")
+        &"builder_down":
+            return Color("#ffad5c")
+        &"builder_left":
+            return Color("#c58cff")
+        &"builder_right":
+            return Color("#72df8f")
+        _:
+            return Color.WHITE
+
+func _apply_rotation_direction_button_colors() -> void:
+    for action in dpad_direction_buttons:
+        var button := dpad_direction_buttons[action] as Button
+        if button == null:
+            continue
+
+        var color := _rotation_direction_color(action)
+        var normal := StyleBoxFlat.new()
+        normal.bg_color = Color(color.r, color.g, color.b, 0.16)
+        normal.border_color = Color(color.r, color.g, color.b, 0.70)
+        normal.set_border_width_all(2)
+        normal.corner_radius_top_left = 10
+        normal.corner_radius_top_right = 10
+        normal.corner_radius_bottom_left = 10
+        normal.corner_radius_bottom_right = 10
+
+        var hover := normal.duplicate() as StyleBoxFlat
+        hover.bg_color = Color(color.r, color.g, color.b, 0.28)
+
+        var pressed := normal.duplicate() as StyleBoxFlat
+        pressed.bg_color = Color(color.r, color.g, color.b, 0.40)
+
+        button.add_theme_stylebox_override("normal", normal)
+        button.add_theme_stylebox_override("hover", hover)
+        button.add_theme_stylebox_override("pressed", pressed)
+        button.add_theme_color_override("font_color", color.lightened(0.18))
+        button.add_theme_color_override("font_hover_color", color.lightened(0.26))
+        button.add_theme_color_override("font_pressed_color", color.lightened(0.34))
+
+func _refresh_rotation_guide() -> void:
+    if rotation_guide_root == null:
+        return
+
+    for child in rotation_guide_root.get_children():
+        child.queue_free()
+
+    if not parts_open or PartFactory.is_color_tool(selected_part):
+        return
+
+    var cell_min := Vector3(float(cursor.x), float(cursor.z), float(cursor.y))
+    var cell_max := cell_min + Vector3.ONE
+    var center := (cell_min + cell_max) * 0.5
+    var inset := 0.018
+    var thickness := 0.018
+
+    # The guide is fixed to world/grid directions just like part rotation.
+    # Each D-pad direction gets a matching faint cell wall.
+    _add_rotation_wall(
+        Vector3(center.x, center.y, cell_min.z + inset),
+        Vector3(0.96, 0.96, thickness),
+        _rotation_direction_color(&"builder_up")
+    )
+    _add_rotation_wall(
+        Vector3(center.x, center.y, cell_max.z - inset),
+        Vector3(0.96, 0.96, thickness),
+        _rotation_direction_color(&"builder_down")
+    )
+    _add_rotation_wall(
+        Vector3(cell_min.x + inset, center.y, center.z),
+        Vector3(thickness, 0.96, 0.96),
+        _rotation_direction_color(&"builder_left")
+    )
+    _add_rotation_wall(
+        Vector3(cell_max.x - inset, center.y, center.z),
+        Vector3(thickness, 0.96, 0.96),
+        _rotation_direction_color(&"builder_right")
+    )
+
+func _add_rotation_wall(position_value: Vector3, size_value: Vector3, color: Color) -> void:
+    var mesh := BoxMesh.new()
+    mesh.size = size_value
+
+    var material := StandardMaterial3D.new()
+    material.albedo_color = Color(color.r, color.g, color.b, 0.12)
+    material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    material.cull_mode = BaseMaterial3D.CULL_DISABLED
+    mesh.material = material
+
+    var instance := MeshInstance3D.new()
+    instance.mesh = mesh
+    instance.position = position_value
+    instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    rotation_guide_root.add_child(instance)
 
 func _camera_relative_grid_direction(action: StringName) -> Vector2i:
     if camera == null:
