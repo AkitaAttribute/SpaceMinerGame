@@ -880,15 +880,31 @@ func _place_current_part() -> void:
         return
 
     if PartFactory.is_color_tool(selected_part):
+        AppLogger.event("PAINT requested at cursor=%s" % str(cursor))
         _apply_color_tool()
         return
 
     if not PartFactory.is_placeable(selected_part):
         return
 
+    var part_id := str(PartFactory.get_definition(selected_part)["id"])
+    AppLogger.event(
+        "PLACE begin part=%s index=%d cursor=%s" % [
+            part_id,
+            selected_part,
+            str(cursor),
+        ]
+    )
+
     var occupied_cells := _occupied_cells_for(selected_part, part_basis, cursor)
     for cell in occupied_cells:
         if not _cell_in_bounds(cell):
+            AppLogger.event(
+                "PLACE aborted part=%s reason=out_of_bounds cell=%s" % [
+                    part_id,
+                    str(cell),
+                ]
+            )
             return
 
     var conflicts: Array[Node3D] = []
@@ -906,7 +922,15 @@ func _place_current_part() -> void:
     for value in part_colors[selected_part]:
         colors.append(value as Color)
 
+    AppLogger.event("PLACE creating geometry part=%s" % part_id)
     var part := PartFactory.create_part(selected_part, colors, false)
+    AppLogger.event(
+        "PLACE geometry created part=%s child_count=%d" % [
+            part_id,
+            part.get_child_count(),
+        ]
+    )
+
     part.position = _cursor_world_position()
     part.basis = part_basis
     part.set_meta("grid_position", cursor)
@@ -918,7 +942,14 @@ func _place_current_part() -> void:
     for cell in occupied_cells:
         placed_parts[cell] = part
 
+    AppLogger.event(
+        "PLACE registered part=%s occupied=%s; starting highlight" % [
+            part_id,
+            str(occupied_cells),
+        ]
+    )
     _refresh_selection_highlight()
+    AppLogger.event("PLACE complete part=%s" % part_id)
 
 func _remove_current_part() -> void:
     var node := _current_placed_part()
@@ -1013,8 +1044,16 @@ func _refresh_selection_highlight() -> void:
         return
 
     var part_id := str(PartFactory.get_definition(target_index)["id"])
+    AppLogger.event(
+        "HIGHLIGHT begin part=%s cursor=%s" % [
+            part_id,
+            str(cursor),
+        ]
+    )
+
     if part_id == "cube":
         _add_cube_cell_highlight(cursor)
+        AppLogger.event("HIGHLIGHT complete part=cube mode=cell_edges")
         return
 
     # Non-cube parts use their actual geometric edges instead of an expanded
@@ -1024,6 +1063,7 @@ func _refresh_selection_highlight() -> void:
     var cell_max := cell_min + Vector3.ONE
     var epsilon := Vector3.ONE * 0.004
     _add_mesh_edge_highlights(target, cell_min - epsilon, cell_max + epsilon)
+    AppLogger.event("HIGHLIGHT complete part=%s mode=mesh_edges" % part_id)
 
 func _add_mesh_edge_highlights(source: Node, cell_min: Vector3, cell_max: Vector3) -> void:
     if source is MeshInstance3D:
@@ -1070,6 +1110,9 @@ func _add_mesh_instance_edges(
                 )
 
     var crease_dot_limit := cos(deg_to_rad(32.0))
+    var drawn_edges := 0
+    const MAX_HIGHLIGHT_EDGES := 512
+
     for value in edges.values():
         var edge := value as Dictionary
         var normals: Array = edge["normals"]
@@ -1095,8 +1138,30 @@ func _add_mesh_instance_edges(
             cell_min,
             cell_max
         )
-        if clipped.size() == 2:
-            _add_highlight_segment(clipped[0], clipped[1])
+        if clipped.size() != 2:
+            continue
+
+        if drawn_edges >= MAX_HIGHLIGHT_EDGES:
+            AppLogger.event(
+                "HIGHLIGHT edge cap reached mesh=%s unique_edges=%d cap=%d" % [
+                    source_mesh.name,
+                    edges.size(),
+                    MAX_HIGHLIGHT_EDGES,
+                ]
+            )
+            break
+
+        _add_highlight_segment(clipped[0], clipped[1])
+        drawn_edges += 1
+
+    AppLogger.event(
+        "HIGHLIGHT mesh=%s surfaces=%d unique_edges=%d drawn_edges=%d" % [
+            source_mesh.name,
+            mesh.get_surface_count(),
+            edges.size(),
+            drawn_edges,
+        ]
+    )
 
 func _register_triangle_edges(
     edges: Dictionary,
