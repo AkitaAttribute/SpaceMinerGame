@@ -22,11 +22,15 @@ var pinch_previous_distance := 0.0
 var grid_root: Node3D
 var placed_root: Node3D
 var ghost_root: Node3D
+var selection_highlight_root: Node3D
+var selection_outline_shader: Shader
 var cursor := Vector3i(0, 0, 0)
 var selected_part := 0
 var part_basis := Basis.IDENTITY
 var part_colors: Dictionary = {}
 var placed_parts: Dictionary = {}
+var paint_color := Color("#5f83c6")
+var paint_slot := 0
 
 var ui_layer: CanvasLayer
 var ui_root: Control
@@ -37,6 +41,7 @@ var parts_scroll: ScrollContainer
 var part_cards: HBoxContainer
 var color_slot_select: OptionButton
 var color_picker: ColorPickerButton
+var place_button: Button
 var level_label: Label
 var controls_root: Control
 var dpad_root: Control
@@ -67,12 +72,14 @@ func _ready() -> void:
     _build_scene_nodes()
     _build_ui()
     AppSettings.theme_changed.connect(_apply_theme)
+    AppSettings.highlight_color_changed.connect(_refresh_selection_highlight)
     AppSettings.controls_visibility_changed.connect(_refresh_controls_visibility)
     AppSettings.bindings_changed.connect(_on_bindings_changed)
     _apply_theme()
     _refresh_controls_visibility()
     _refresh_ghost()
     _rebuild_grid()
+    _refresh_selection_highlight()
     _update_camera()
 
 func _notification(what: int) -> void:
@@ -110,6 +117,10 @@ func _build_scene_nodes() -> void:
     ghost_root = Node3D.new()
     ghost_root.name = "PlacementGhost"
     add_child(ghost_root)
+
+    selection_highlight_root = Node3D.new()
+    selection_highlight_root.name = "SelectionHighlight"
+    add_child(selection_highlight_root)
 
     camera = Camera3D.new()
     camera.name = "OrbitCamera"
@@ -220,7 +231,7 @@ func _build_parts_panel() -> void:
     actions.add_theme_constant_override("separation", 8)
     content.add_child(actions)
 
-    var place_button := Button.new()
+    place_button = Button.new()
     place_button.text = "Place"
     place_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     place_button.pressed.connect(_place_current_part)
@@ -552,6 +563,21 @@ func _show_display_menu() -> void:
     )
     row.add_child(selector)
 
+    var highlight_row := HBoxContainer.new()
+    highlight_row.add_theme_constant_override("separation", 12)
+    menu_content.add_child(highlight_row)
+
+    var highlight_label := Label.new()
+    highlight_label.text = "Part highlight"
+    highlight_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    highlight_row.add_child(highlight_label)
+
+    var highlight_picker := ColorPickerButton.new()
+    highlight_picker.custom_minimum_size = Vector2(70.0, 44.0)
+    highlight_picker.color = AppSettings.highlight_color
+    highlight_picker.color_changed.connect(AppSettings.set_highlight_color)
+    highlight_row.add_child(highlight_picker)
+
 func _show_controls_menu() -> void:
     menu_state = "controls"
     _clear_menu_content()
@@ -642,14 +668,16 @@ func _set_parts_open(value: bool) -> void:
     _refresh_bumper_visibility()
     if value:
         _refresh_color_controls()
+    _refresh_part_action_label()
     _refresh_ghost()
+    _refresh_selection_highlight()
 
 func _perform_dpad(action: StringName) -> void:
     var grid_direction := _camera_relative_grid_direction(action)
     if grid_direction == Vector2i.ZERO:
         return
 
-    if parts_open:
+    if parts_open and not PartFactory.is_color_tool(selected_part):
         _rotate_part_in_grid_direction(grid_direction)
         _refresh_ghost()
         return
@@ -657,6 +685,9 @@ func _perform_dpad(action: StringName) -> void:
     cursor.x = clampi(cursor.x + grid_direction.x, GRID_MIN_X, GRID_MAX_X)
     cursor.y = clampi(cursor.y + grid_direction.y, GRID_MIN_DEPTH, GRID_MAX_DEPTH)
     _refresh_ghost()
+    _refresh_selection_highlight()
+    if PartFactory.is_color_tool(selected_part):
+        _refresh_color_controls()
     _update_level_label()
 
 func _camera_relative_grid_direction(action: StringName) -> Vector2i:
@@ -720,6 +751,9 @@ func _rotate_part_in_grid_direction(grid_direction: Vector2i) -> void:
 func _change_level(delta: int) -> void:
     cursor.z = clampi(cursor.z + delta, GRID_MIN_LEVEL, GRID_MAX_LEVEL)
     _refresh_ghost()
+    _refresh_selection_highlight()
+    if PartFactory.is_color_tool(selected_part):
+        _refresh_color_controls()
     _update_level_label()
     _rebuild_grid()
 
@@ -728,21 +762,58 @@ func _cycle_part(delta: int) -> void:
         return
     selected_part = posmod(selected_part + delta, PartFactory.part_count())
     part_basis = Basis.IDENTITY
+    paint_slot = 0
     _refresh_ghost()
+    _refresh_selection_highlight()
     _rebuild_part_cards()
     _refresh_color_controls()
+    _refresh_part_action_label()
 
 func _select_part(index: int) -> void:
     selected_part = clampi(index, 0, PartFactory.part_count() - 1)
     part_basis = Basis.IDENTITY
+    paint_slot = 0
     _refresh_ghost()
+    _refresh_selection_highlight()
     _rebuild_part_cards()
     _refresh_color_controls()
+    _refresh_part_action_label()
+
+func _refresh_part_action_label() -> void:
+    if place_button == null:
+        return
+    place_button.text = "Paint" if PartFactory.is_color_tool(selected_part) else "Place"
 
 func _refresh_color_controls() -> void:
     if color_slot_select == null or color_picker == null:
         return
+
     color_slot_select.clear()
+    color_slot_select.disabled = false
+    color_picker.disabled = false
+
+    if PartFactory.is_color_tool(selected_part):
+        var target := _current_placed_part()
+        if target == null:
+            color_slot_select.add_item("No part selected")
+            color_slot_select.disabled = true
+            color_picker.color = paint_color
+            return
+
+        var target_index := int(target.get_meta("part_index", -1))
+        if target_index < 0:
+            color_slot_select.add_item("No color regions")
+            color_slot_select.disabled = true
+            return
+
+        for slot_name in PartFactory.color_slot_names(target_index):
+            color_slot_select.add_item(slot_name)
+        if color_slot_select.item_count > 0:
+            paint_slot = clampi(paint_slot, 0, color_slot_select.item_count - 1)
+            color_slot_select.select(paint_slot)
+        color_picker.color = paint_color
+        return
+
     for slot_name in PartFactory.color_slot_names(selected_part):
         color_slot_select.add_item(slot_name)
     if color_slot_select.item_count > 0:
@@ -751,11 +822,19 @@ func _refresh_color_controls() -> void:
         color_picker.color = colors[0]
 
 func _on_color_slot_selected(index: int) -> void:
+    if PartFactory.is_color_tool(selected_part):
+        paint_slot = index
+        return
+
     var colors: Array = part_colors[selected_part]
     if index >= 0 and index < colors.size():
         color_picker.color = colors[index]
 
 func _on_color_changed(color: Color) -> void:
+    if PartFactory.is_color_tool(selected_part):
+        paint_color = color
+        return
+
     var slot := color_slot_select.selected
     var colors: Array = part_colors[selected_part]
     if slot < 0 or slot >= colors.size():
@@ -770,6 +849,9 @@ func _refresh_ghost() -> void:
     for child in ghost_root.get_children():
         child.queue_free()
 
+    if PartFactory.is_color_tool(selected_part):
+        return
+
     var colors: Array[Color] = []
     for value in part_colors[selected_part]:
         colors.append(value as Color)
@@ -783,11 +865,28 @@ func _place_current_part() -> void:
     if menu_open:
         return
 
-    var key := cursor
-    if placed_parts.has(key):
-        var old_node: Node = placed_parts[key]
-        if is_instance_valid(old_node):
-            old_node.queue_free()
+    if PartFactory.is_color_tool(selected_part):
+        _apply_color_tool()
+        return
+
+    if not PartFactory.is_placeable(selected_part):
+        return
+
+    var occupied_cells := _occupied_cells_for(selected_part, part_basis, cursor)
+    for cell in occupied_cells:
+        if not _cell_in_bounds(cell):
+            return
+
+    var conflicts: Array[Node3D] = []
+    for cell in occupied_cells:
+        if not placed_parts.has(cell):
+            continue
+        var existing := placed_parts[cell] as Node3D
+        if existing != null and not conflicts.has(existing):
+            conflicts.append(existing)
+
+    for existing in conflicts:
+        _delete_placed_node(existing)
 
     var colors: Array[Color] = []
     for value in part_colors[selected_part]:
@@ -796,19 +895,215 @@ func _place_current_part() -> void:
     var part := PartFactory.create_part(selected_part, colors, false)
     part.position = _cursor_world_position()
     part.basis = part_basis
-    part.set_meta("grid_position", key)
+    part.set_meta("grid_position", cursor)
     part.set_meta("rotation_basis", part_basis)
+    part.set_meta("colors", colors.duplicate())
+    part.set_meta("occupied_cells", occupied_cells.duplicate())
     placed_root.add_child(part)
-    placed_parts[key] = part
+
+    for cell in occupied_cells:
+        placed_parts[cell] = part
+
+    _refresh_selection_highlight()
 
 func _remove_current_part() -> void:
-    var key := cursor
-    if not placed_parts.has(key):
+    var node := _current_placed_part()
+    if node == null:
         return
-    var node: Node = placed_parts[key]
+    _delete_placed_node(node)
+    _refresh_selection_highlight()
+    if PartFactory.is_color_tool(selected_part):
+        _refresh_color_controls()
+
+func _delete_placed_node(node: Node3D) -> void:
+    if node == null:
+        return
+
+    var cells: Array = node.get_meta("occupied_cells", [])
+    for value in cells:
+        var cell := value as Vector3i
+        if placed_parts.get(cell, null) == node:
+            placed_parts.erase(cell)
+
     if is_instance_valid(node):
         node.queue_free()
-    placed_parts.erase(key)
+
+func _occupied_cells_for(part_index: int, basis_value: Basis, anchor: Vector3i) -> Array[Vector3i]:
+    var result: Array[Vector3i] = []
+    for offset in PartFactory.occupied_offsets(part_index):
+        var local_world := Vector3(float(offset.x), float(offset.z), float(offset.y))
+        var rotated := basis_value * local_world
+        var logical_offset := Vector3i(
+            int(round(rotated.x)),
+            int(round(rotated.z)),
+            int(round(rotated.y))
+        )
+        result.append(anchor + logical_offset)
+    return result
+
+func _cell_in_bounds(cell: Vector3i) -> bool:
+    return (
+        cell.x >= GRID_MIN_X
+        and cell.x <= GRID_MAX_X
+        and cell.y >= GRID_MIN_DEPTH
+        and cell.y <= GRID_MAX_DEPTH
+        and cell.z >= GRID_MIN_LEVEL
+        and cell.z <= GRID_MAX_LEVEL
+    )
+
+func _current_placed_part() -> Node3D:
+    if not placed_parts.has(cursor):
+        return null
+    var node := placed_parts[cursor] as Node3D
+    if node == null or not is_instance_valid(node):
+        placed_parts.erase(cursor)
+        return null
+    return node
+
+func _apply_color_tool() -> void:
+    var target := _current_placed_part()
+    if target == null:
+        return
+
+    var target_index := int(target.get_meta("part_index", -1))
+    if target_index < 0:
+        return
+
+    var stored_colors: Array = target.get_meta("colors", PartFactory.default_colors(target_index))
+    var colors: Array[Color] = []
+    for value in stored_colors:
+        colors.append(value as Color)
+
+    if colors.is_empty():
+        return
+
+    paint_slot = clampi(paint_slot, 0, colors.size() - 1)
+    colors[paint_slot] = paint_color
+    target.set_meta("colors", colors.duplicate())
+    PartFactory.apply_colors(target, colors, false)
+    _refresh_selection_highlight()
+
+func _refresh_selection_highlight() -> void:
+    if selection_highlight_root == null:
+        return
+
+    for child in selection_highlight_root.get_children():
+        child.queue_free()
+
+    var target := _current_placed_part()
+    if target == null:
+        return
+
+    var target_index := int(target.get_meta("part_index", -1))
+    if target_index < 0:
+        return
+
+    var part_id := str(PartFactory.get_definition(target_index)["id"])
+    if part_id == "cube":
+        _add_cube_cell_highlight(cursor)
+        return
+
+    var cell_min := Vector3(float(cursor.x), float(cursor.z), float(cursor.y))
+    var cell_max := cell_min + Vector3.ONE
+    var epsilon := Vector3.ONE * 0.003
+    _clone_outline_meshes(target, cell_min - epsilon, cell_max + epsilon)
+
+func _clone_outline_meshes(source: Node, cell_min: Vector3, cell_max: Vector3) -> void:
+    if source is MeshInstance3D:
+        var source_mesh := source as MeshInstance3D
+        if source_mesh.mesh != null:
+            var outline := MeshInstance3D.new()
+            outline.mesh = source_mesh.mesh
+            outline.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+            selection_highlight_root.add_child(outline)
+            outline.global_transform = source_mesh.global_transform
+
+            var material := ShaderMaterial.new()
+            material.shader = _get_selection_outline_shader()
+            material.set_shader_parameter("outline_color", AppSettings.highlight_color)
+            material.set_shader_parameter("cell_min", cell_min)
+            material.set_shader_parameter("cell_max", cell_max)
+            outline.material_override = material
+
+    for child in source.get_children():
+        _clone_outline_meshes(child, cell_min, cell_max)
+
+func _get_selection_outline_shader() -> Shader:
+    if selection_outline_shader != null:
+        return selection_outline_shader
+
+    selection_outline_shader = Shader.new()
+    selection_outline_shader.code = """
+shader_type spatial;
+render_mode unshaded, cull_front;
+
+uniform vec4 outline_color : source_color = vec4(1.0, 0.85, 0.24, 1.0);
+uniform float outline_width = 0.035;
+uniform vec3 cell_min = vec3(-1000.0);
+uniform vec3 cell_max = vec3(1000.0);
+
+varying vec3 source_world_position;
+
+void vertex() {
+    source_world_position = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+    VERTEX += NORMAL * outline_width;
+}
+
+void fragment() {
+    if (
+        source_world_position.x < cell_min.x
+        || source_world_position.y < cell_min.y
+        || source_world_position.z < cell_min.z
+        || source_world_position.x > cell_max.x
+        || source_world_position.y > cell_max.y
+        || source_world_position.z > cell_max.z
+    ) {
+        discard;
+    }
+    ALBEDO = outline_color.rgb;
+}
+"""
+    return selection_outline_shader
+
+func _add_cube_cell_highlight(cell: Vector3i) -> void:
+    var cell_min := Vector3(float(cell.x), float(cell.z), float(cell.y))
+    var cell_max := cell_min + Vector3.ONE
+    var center := (cell_min + cell_max) * 0.5
+    var thickness := 0.035
+
+    for y in [cell_min.y, cell_max.y]:
+        for z in [cell_min.z, cell_max.z]:
+            _add_highlight_beam(
+                Vector3(center.x, y, z),
+                Vector3(1.04, thickness, thickness)
+            )
+    for x in [cell_min.x, cell_max.x]:
+        for z in [cell_min.z, cell_max.z]:
+            _add_highlight_beam(
+                Vector3(x, center.y, z),
+                Vector3(thickness, 1.04, thickness)
+            )
+    for x in [cell_min.x, cell_max.x]:
+        for y in [cell_min.y, cell_max.y]:
+            _add_highlight_beam(
+                Vector3(x, y, center.z),
+                Vector3(thickness, thickness, 1.04)
+            )
+
+func _add_highlight_beam(position_value: Vector3, size_value: Vector3) -> void:
+    var mesh := BoxMesh.new()
+    mesh.size = size_value
+
+    var material := StandardMaterial3D.new()
+    material.albedo_color = AppSettings.highlight_color
+    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+
+    var instance := MeshInstance3D.new()
+    instance.mesh = mesh
+    instance.material_override = material
+    instance.position = position_value
+    instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    selection_highlight_root.add_child(instance)
 
 func _cursor_world_position() -> Vector3:
     # Logical coordinates identify cells. World-space grid lines are the cell
