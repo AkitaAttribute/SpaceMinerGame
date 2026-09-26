@@ -1027,9 +1027,31 @@ func _apply_color_tool() -> void:
     if colors.is_empty():
         return
 
-    paint_slot = clampi(paint_slot, 0, colors.size() - 1)
-    colors[paint_slot] = paint_color
+    # The OptionButton is the authoritative source for the color region at the
+    # moment Paint is pressed. Keeping only a cached index allowed the UI label
+    # and the slot actually painted to get out of sync.
+    var selected_slot := color_slot_select.selected
+    if selected_slot < 0 or selected_slot >= colors.size():
+        selected_slot = clampi(paint_slot, 0, colors.size() - 1)
+
+    paint_slot = selected_slot
+    colors[selected_slot] = paint_color
     target.set_meta("colors", colors.duplicate())
+
+    var slot_names := PartFactory.color_slot_names(target_index)
+    var slot_name := "slot_%d" % selected_slot
+    if selected_slot < slot_names.size():
+        slot_name = slot_names[selected_slot]
+
+    AppLogger.event(
+        "PAINT applying part=%s region=%s slot=%d color=%s" % [
+            str(PartFactory.get_definition(target_index)["id"]),
+            slot_name,
+            selected_slot,
+            paint_color.to_html(true),
+        ]
+    )
+
     PartFactory.apply_colors(target, colors, false)
     _refresh_selection_highlight()
 
