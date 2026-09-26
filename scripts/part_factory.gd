@@ -123,12 +123,13 @@ static func _material(color: Color, ghost: bool) -> StandardMaterial3D:
     var material := StandardMaterial3D.new()
     var final_color := color
     if ghost:
-        final_color.a = 0.48
+        final_color.a = 0.46
         material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-        material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
     material.albedo_color = final_color
-    material.metallic = 0.12
-    material.roughness = 0.48
+    # Builder pieces are intentionally matte. This avoids the bright specular
+    # response that made slopes and pyramids read as though they were emissive.
+    material.metallic = 0.0
+    material.roughness = 0.82
     return material
 
 static func _pyramid_mesh() -> ArrayMesh:
@@ -163,7 +164,6 @@ static func _wedge_mesh(length: float, height: float) -> ArrayMesh:
         a, b, f, a, f, e,
         d, e, f, d, f, c,
         a, e, d,
-        a, f, e, a, b, f,
         b, c, f,
     ])
     return _mesh_from_triangles(vertices)
@@ -185,7 +185,10 @@ static func _hemisphere_mesh() -> ArrayMesh:
             var p01 := _hemisphere_point(theta0, phi1, radius, plane_y)
             var p10 := _hemisphere_point(theta1, phi0, radius, plane_y)
             var p11 := _hemisphere_point(theta1, phi1, radius, plane_y)
-            vertices.append_array(PackedVector3Array([p00, p10, p11, p00, p11, p01]))
+            # The curved shell previously used the opposite winding from the
+            # rest of the custom parts, so Godot treated the outside as a back
+            # face and the hemisphere looked hollow from common camera angles.
+            vertices.append_array(PackedVector3Array([p00, p11, p10, p00, p01, p11]))
 
     var center := Vector3(0.0, plane_y, 0.0)
     for segment in range(segments):
