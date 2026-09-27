@@ -10,6 +10,7 @@ run/flush_stdout_on_print=true
 [autoload]
 AppLogger="*res://scripts/app_logger.gd"
 AppSettings="*res://scripts/app_settings.gd"
+ShipStore="*res://scripts/ship_store.gd"
 
 [debug]
 settings/gdscript/always_track_call_stacks=true
