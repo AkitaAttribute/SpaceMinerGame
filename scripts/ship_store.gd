@@ -24,6 +24,111 @@ func get_model_metadata(model_id: String) -> Dictionary:
             return model.duplicate(true)
     return {}
 
+func rename_model(model_id: String, requested_name: String) -> bool:
+    var trimmed := requested_name.strip_edges()
+    if trimmed.is_empty():
+        return false
+
+    var final_name := _unique_name(trimmed, model_id)
+    for model in _models:
+        if str(model.get("id", "")) == model_id:
+            model["name"] = final_name
+            model["updated_at"] = Time.get_datetime_string_from_system()
+            _save_index()
+            return true
+    return false
+
+
+func get_export_payload(model_id: String) -> Dictionary:
+    var metadata := get_model_metadata(model_id)
+    if metadata.is_empty():
+        return {}
+
+    var model_data := load_model(model_id)
+    return {
+        "format": "SpaceMinerShip",
+        "version": 1,
+        "name": str(metadata.get("name", "Ship")),
+        "camera": model_data.get("camera", {}),
+        "parts": model_data.get("parts", []),
+    }
+
+
+func get_export_json(model_id: String) -> String:
+    var payload := get_export_payload(model_id)
+    if payload.is_empty():
+        return ""
+    return JSON.stringify(payload, "  ")
+
+
+func import_json(raw_json: String) -> Dictionary:
+    var parsed = JSON.parse_string(raw_json)
+    if not (parsed is Dictionary):
+        return {
+            "ok": false,
+            "error": "The pasted/imported data is not a JSON object.",
+        }
+
+    var payload := parsed as Dictionary
+    var format_name := str(payload.get("format", ""))
+    if not format_name.is_empty() and format_name != "SpaceMinerShip":
+        return {
+            "ok": false,
+            "error": "This JSON is not a Space Miner ship model.",
+        }
+
+    var parts = payload.get("parts", [])
+    if not (parts is Array):
+        return {
+            "ok": false,
+            "error": "The ship model has an invalid parts array.",
+        }
+
+    var camera = payload.get("camera", {})
+    if not (camera is Dictionary):
+        return {
+            "ok": false,
+            "error": "The ship model has invalid camera data.",
+        }
+
+    var requested_name := str(payload.get("name", "Imported Ship")).strip_edges()
+    if requested_name.is_empty():
+        requested_name = "Imported Ship"
+
+    var model_id := "%d_%d" % [
+        int(Time.get_unix_time_from_system()),
+        Time.get_ticks_msec(),
+    ]
+    var metadata := {
+        "id": model_id,
+        "name": _unique_name(requested_name),
+        "thumbnail": _thumbnail_path(model_id),
+        "updated_at": Time.get_datetime_string_from_system(),
+    }
+    _models.append(metadata)
+    _save_index()
+
+    save_model(model_id, {
+        "version": 1,
+        "parts": (parts as Array).duplicate(true),
+        "camera": (camera as Dictionary).duplicate(true),
+    })
+
+    return {
+        "ok": true,
+        "model": metadata.duplicate(true),
+    }
+
+
+func import_file(path: String) -> Dictionary:
+    var file := FileAccess.open(path, FileAccess.READ)
+    if file == null:
+        return {
+            "ok": false,
+            "error": "The selected file could not be opened.",
+        }
+    return import_json(file.get_as_text())
+
 
 func create_model() -> Dictionary:
     _ensure_storage()
@@ -124,15 +229,14 @@ func load_thumbnail(model_id: String) -> Texture2D:
 
 
 func export_model(model_id: String, destination_path: String) -> bool:
-    var source_path := _model_path(model_id)
-    if not FileAccess.file_exists(source_path):
+    var data := get_export_json(model_id)
+    if data.is_empty():
         return false
 
     var target := destination_path
-    if target.get_extension().to_lower() != "json":
+    if not target.begins_with("content://") and target.get_extension().to_lower() != "json":
         target += ".json"
 
-    var data := FileAccess.get_file_as_string(source_path)
     var output := FileAccess.open(target, FileAccess.WRITE)
     if output == null:
         return false
@@ -163,6 +267,26 @@ func delete_model(model_id: String) -> bool:
 
     _save_index()
     return true
+
+
+func _unique_name(requested_name: String, exclude_model_id := "") -> String:
+    var base := requested_name.strip_edges()
+    if base.is_empty():
+        base = "Ship"
+
+    var used: Dictionary = {}
+    for model in _models:
+        if str(model.get("id", "")) == exclude_model_id:
+            continue
+        used[str(model.get("name", ""))] = true
+
+    if not used.has(base):
+        return base
+
+    var suffix := 2
+    while used.has("%s %d" % [base, suffix]):
+        suffix += 1
+    return "%s %d" % [base, suffix]
 
 
 func _ensure_storage() -> void:
