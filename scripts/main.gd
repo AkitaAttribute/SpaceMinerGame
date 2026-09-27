@@ -51,6 +51,14 @@ var previous_bumper: Button
 var next_bumper: Button
 var gear_button: Button
 
+var selector_root: Control
+var selector_background: ColorRect
+var selector_list: VBoxContainer
+var selector_gear_button: Button
+var view_mode := "selector"
+var current_ship_id := ""
+var menu_ship_id := ""
+
 var parts_open := false
 var parts_scroll_dragging := false
 var parts_scroll_last_x := 0.0
@@ -83,10 +91,15 @@ func _ready() -> void:
     _rebuild_grid()
     _refresh_selection_highlight()
     _update_camera()
+    _show_ship_selector()
 
 func _notification(what: int) -> void:
     if what == NOTIFICATION_APPLICATION_FOCUS_IN and AppSettings.theme_mode == "system" and ui_root != null:
         _apply_theme()
+    elif what == NOTIFICATION_WM_CLOSE_REQUEST:
+        if view_mode == "builder":
+            _save_current_ship_model()
+        get_tree().quit()
 
 func _build_world() -> void:
     world_environment = WorldEnvironment.new()
@@ -153,6 +166,7 @@ func _build_ui() -> void:
     _build_parts_panel()
     _build_touch_controls()
     _build_gear()
+    _build_ship_selector()
     _build_menu_overlay()
 
     level_label = Label.new()
@@ -347,6 +361,360 @@ func _build_gear() -> void:
     gear_button.pressed.connect(_open_menu)
     ui_root.add_child(gear_button)
 
+func _build_ship_selector() -> void:
+    selector_root = Control.new()
+    selector_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    selector_root.mouse_filter = Control.MOUSE_FILTER_STOP
+    selector_root.visible = false
+    ui_root.add_child(selector_root)
+
+    selector_background = ColorRect.new()
+    selector_background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    selector_background.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    selector_root.add_child(selector_background)
+
+    var add_button := Button.new()
+    add_button.text = "+ Add"
+    add_button.custom_minimum_size = Vector2(160.0, 52.0)
+    add_button.set_anchors_preset(Control.PRESET_CENTER_TOP)
+    add_button.position = Vector2(-80.0, 28.0)
+    add_button.pressed.connect(_create_ship_model)
+    selector_root.add_child(add_button)
+
+    selector_gear_button = Button.new()
+    selector_gear_button.text = "⚙"
+    selector_gear_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+    selector_gear_button.position = Vector2(-82.0, 18.0)
+    selector_gear_button.size = Vector2(58.0, 52.0)
+    selector_gear_button.add_theme_font_size_override("font_size", 28)
+    selector_gear_button.modulate.a = 0.76
+    selector_gear_button.pressed.connect(_open_menu)
+    selector_root.add_child(selector_gear_button)
+
+    var scroll := ScrollContainer.new()
+    scroll.anchor_left = 0.5
+    scroll.anchor_right = 0.5
+    scroll.anchor_top = 0.0
+    scroll.anchor_bottom = 1.0
+    scroll.offset_left = -420.0
+    scroll.offset_right = 420.0
+    scroll.offset_top = 108.0
+    scroll.offset_bottom = -36.0
+    scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+    selector_root.add_child(scroll)
+
+    var center := CenterContainer.new()
+    center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    scroll.add_child(center)
+
+    selector_list = VBoxContainer.new()
+    selector_list.custom_minimum_size = Vector2(800.0, 0.0)
+    selector_list.add_theme_constant_override("separation", 12)
+    center.add_child(selector_list)
+
+func _rebuild_ship_selector() -> void:
+    if selector_list == null:
+        return
+
+    for child in selector_list.get_children():
+        child.queue_free()
+
+    var models := ShipStore.list_models()
+    if models.is_empty():
+        var empty := Label.new()
+        empty.text = "No ship models yet."
+        empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        empty.custom_minimum_size = Vector2(800.0, 80.0)
+        empty.modulate.a = 0.72
+        selector_list.add_child(empty)
+        return
+
+    for metadata in models:
+        _add_ship_selector_row(metadata)
+
+func _add_ship_selector_row(metadata: Dictionary) -> void:
+    var model_id := str(metadata.get("id", ""))
+    var model_name := str(metadata.get("name", "Ship"))
+
+    var row := PanelContainer.new()
+    row.custom_minimum_size = Vector2(800.0, 112.0)
+    selector_list.add_child(row)
+
+    var margin := MarginContainer.new()
+    margin.add_theme_constant_override("margin_left", 10)
+    margin.add_theme_constant_override("margin_right", 10)
+    margin.add_theme_constant_override("margin_top", 10)
+    margin.add_theme_constant_override("margin_bottom", 10)
+    row.add_child(margin)
+
+    var content := HBoxContainer.new()
+    content.add_theme_constant_override("separation", 14)
+    margin.add_child(content)
+
+    var preview := Button.new()
+    preview.custom_minimum_size = Vector2(160.0, 90.0)
+    preview.flat = true
+    preview.expand_icon = true
+    var thumbnail := ShipStore.load_thumbnail(model_id)
+    if thumbnail != null:
+        preview.icon = thumbnail
+    else:
+        preview.text = "No preview"
+    preview.pressed.connect(_open_ship_model.bind(model_id))
+    content.add_child(preview)
+
+    var name_button := Button.new()
+    name_button.text = model_name
+    name_button.flat = true
+    name_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+    name_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    name_button.add_theme_font_size_override("font_size", 23)
+    name_button.pressed.connect(_open_ship_model.bind(model_id))
+    content.add_child(name_button)
+
+    var model_gear := Button.new()
+    model_gear.text = "⚙"
+    model_gear.custom_minimum_size = Vector2(58.0, 58.0)
+    model_gear.add_theme_font_size_override("font_size", 25)
+    model_gear.pressed.connect(_open_ship_model_menu.bind(model_id))
+    content.add_child(model_gear)
+
+func _show_ship_selector() -> void:
+    view_mode = "selector"
+    current_ship_id = ""
+    _set_parts_open(false)
+
+    selector_root.visible = true
+    selector_gear_button.visible = not menu_open
+    gear_button.visible = false
+    level_label.visible = false
+    controls_root.visible = false
+    parts_tab.visible = false
+
+    _set_builder_world_visible(false)
+    _rebuild_ship_selector()
+
+func _show_builder() -> void:
+    view_mode = "builder"
+    selector_root.visible = false
+    selector_gear_button.visible = false
+    gear_button.visible = not menu_open
+    level_label.visible = true
+    parts_tab.visible = not parts_open
+
+    _set_builder_world_visible(true)
+    _refresh_controls_visibility()
+    _refresh_ghost()
+    _refresh_selection_highlight()
+    _refresh_rotation_guide()
+    _rebuild_grid()
+
+func _set_builder_world_visible(value: bool) -> void:
+    for node in [
+        grid_root,
+        placed_root,
+        ghost_root,
+        selection_highlight_root,
+        rotation_guide_root,
+    ]:
+        if node != null:
+            node.visible = value
+
+func _create_ship_model() -> void:
+    var metadata := ShipStore.create_model()
+    _open_ship_model(str(metadata.get("id", "")))
+
+func _open_ship_model(model_id: String) -> void:
+    if model_id.is_empty():
+        return
+
+    current_ship_id = model_id
+    _load_ship_model(model_id)
+    _show_builder()
+
+func _return_to_ship_selector() -> void:
+    if view_mode == "builder":
+        _save_current_ship_model()
+        _capture_current_ship_thumbnail()
+    _close_menu()
+    _show_ship_selector()
+
+func _clear_ship_builder() -> void:
+    placed_parts.clear()
+    for child in placed_root.get_children():
+        child.free()
+
+    cursor = Vector3i.ZERO
+    part_basis = Basis.IDENTITY
+    camera_yaw = deg_to_rad(42.0)
+    camera_pitch = deg_to_rad(-26.0)
+    camera_distance = 14.0
+    camera_target = Vector3(0.0, 0.6, 0.0)
+    _update_camera()
+
+func _load_ship_model(model_id: String) -> void:
+    _clear_ship_builder()
+    var data := ShipStore.load_model(model_id)
+
+    var camera_data = data.get("camera", {})
+    if camera_data is Dictionary:
+        var camera_dict := camera_data as Dictionary
+        camera_yaw = float(camera_dict.get("yaw", camera_yaw))
+        camera_pitch = float(camera_dict.get("pitch", camera_pitch))
+        camera_distance = clampf(
+            float(camera_dict.get("distance", camera_distance)),
+            CAMERA_MIN_DISTANCE,
+            CAMERA_MAX_DISTANCE
+        )
+        var target = camera_dict.get("target", [])
+        if target is Array and (target as Array).size() == 3:
+            camera_target = Vector3(
+                float(target[0]),
+                float(target[1]),
+                float(target[2])
+            )
+        _update_camera()
+
+    var parts_data = data.get("parts", [])
+    if not (parts_data is Array):
+        return
+
+    for value in parts_data:
+        if not (value is Dictionary):
+            continue
+        var entry := value as Dictionary
+        var part_id := str(entry.get("part_id", ""))
+        var part_index := PartFactory.get_part_index_by_id(part_id)
+        if part_index < 0 or not PartFactory.is_placeable(part_index):
+            continue
+
+        var anchor_data = entry.get("anchor", [])
+        if not (anchor_data is Array) or (anchor_data as Array).size() != 3:
+            continue
+        var anchor := Vector3i(
+            int(anchor_data[0]),
+            int(anchor_data[1]),
+            int(anchor_data[2])
+        )
+
+        var basis := _basis_from_json(entry.get("basis", []))
+        var colors: Array[Color] = []
+        var color_data = entry.get("colors", [])
+        if color_data is Array:
+            for color_value in color_data:
+                colors.append(Color.from_string(str(color_value), Color.WHITE))
+        if colors.is_empty():
+            colors = PartFactory.default_colors(part_index)
+
+        var part := PartFactory.create_part(part_index, colors, false)
+        part.position = Vector3(
+            float(anchor.x) + 0.5,
+            float(anchor.z) + 0.5,
+            float(anchor.y) + 0.5
+        )
+        part.basis = basis
+
+        var occupied_cells := _occupied_cells_for(part_index, basis, anchor)
+        part.set_meta("grid_position", anchor)
+        part.set_meta("rotation_basis", basis)
+        part.set_meta("colors", colors.duplicate())
+        part.set_meta("occupied_cells", occupied_cells.duplicate())
+        placed_root.add_child(part)
+
+        for cell in occupied_cells:
+            placed_parts[cell] = part
+
+func _save_current_ship_model() -> void:
+    if current_ship_id.is_empty():
+        return
+
+    var parts_data: Array[Dictionary] = []
+    for child in placed_root.get_children():
+        if not (child is Node3D):
+            continue
+        var part := child as Node3D
+        var part_index := int(part.get_meta("part_index", -1))
+        if part_index < 0:
+            continue
+
+        var anchor: Vector3i = part.get_meta("grid_position", Vector3i.ZERO)
+        var colors_value: Array = part.get_meta(
+            "colors",
+            PartFactory.default_colors(part_index)
+        )
+        var color_strings: Array[String] = []
+        for color_value in colors_value:
+            color_strings.append((color_value as Color).to_html(true))
+
+        parts_data.append({
+            "part_id": str(PartFactory.get_definition(part_index)["id"]),
+            "anchor": [anchor.x, anchor.y, anchor.z],
+            "basis": _basis_to_json(part.basis),
+            "colors": color_strings,
+        })
+
+    ShipStore.save_model(current_ship_id, {
+        "version": 1,
+        "camera": {
+            "yaw": camera_yaw,
+            "pitch": camera_pitch,
+            "distance": camera_distance,
+            "target": [
+                camera_target.x,
+                camera_target.y,
+                camera_target.z,
+            ],
+        },
+        "parts": parts_data,
+    })
+
+func _basis_to_json(value: Basis) -> Array[float]:
+    return [
+        value.x.x, value.x.y, value.x.z,
+        value.y.x, value.y.y, value.y.z,
+        value.z.x, value.z.y, value.z.z,
+    ]
+
+func _basis_from_json(value) -> Basis:
+    if not (value is Array) or (value as Array).size() != 9:
+        return Basis.IDENTITY
+
+    return Basis(
+        Vector3(float(value[0]), float(value[1]), float(value[2])),
+        Vector3(float(value[3]), float(value[4]), float(value[5])),
+        Vector3(float(value[6]), float(value[7]), float(value[8]))
+    ).orthonormalized()
+
+func _capture_current_ship_thumbnail() -> void:
+    if current_ship_id.is_empty() or view_mode != "builder":
+        return
+
+    var image := get_viewport().get_texture().get_image()
+    if image == null or image.is_empty():
+        return
+
+    var width := image.get_width()
+    var height := image.get_height()
+    var crop_width := mini(width, 640)
+    var crop_height := int(round(float(crop_width) * 9.0 / 16.0))
+    crop_height = mini(crop_height, height)
+
+    var crop_x := maxi(0, (width - crop_width) / 2)
+    var crop_y := maxi(0, (height - crop_height) / 2)
+    var thumbnail := image.get_region(
+        Rect2i(crop_x, crop_y, crop_width, crop_height)
+    )
+    thumbnail.resize(320, 180, Image.INTERPOLATE_LANCZOS)
+    ShipStore.save_thumbnail(current_ship_id, thumbnail)
+
+func _mark_ship_changed() -> void:
+    if view_mode != "builder" or current_ship_id.is_empty():
+        return
+    _save_current_ship_model()
+    _capture_current_ship_thumbnail()
+
 func _build_menu_overlay() -> void:
     menu_dim = ColorRect.new()
     menu_dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -378,6 +746,8 @@ func _apply_theme() -> void:
     ui_root.theme = SpaceMinerTheme.build(dark)
     parts_dim.color = palette["parts_overlay"]
     menu_dim.color = palette["overlay"]
+    if selector_background != null:
+        selector_background.color = palette["background"]
     if world_environment != null:
         world_environment.environment.background_color = palette["background"].darkened(0.18 if dark else 0.02)
         world_environment.environment.ambient_light_color = Color(0.70, 0.78, 0.94) if dark else Color(0.82, 0.86, 0.94)
@@ -387,7 +757,11 @@ func _apply_theme() -> void:
 func _refresh_controls_visibility() -> void:
     if controls_root == null:
         return
-    controls_root.visible = AppSettings.should_show_touch_controls() and not menu_open
+    controls_root.visible = (
+        view_mode == "builder"
+        and AppSettings.should_show_touch_controls()
+        and not menu_open
+    )
     _refresh_bumper_visibility()
     _refresh_vertical_controls_visibility()
 
@@ -419,7 +793,7 @@ func _input(event: InputEvent) -> void:
     # Tab (or a remapped equivalent) from ever falling through into UI focus
     # traversal/accessibility-style navigation.
     if event.is_action_pressed(&"parts_toggle"):
-        if not menu_open:
+        if not menu_open and view_mode == "builder":
             _set_parts_open(not parts_open)
         get_viewport().set_input_as_handled()
         return
@@ -431,6 +805,9 @@ func _unhandled_input(event: InputEvent) -> void:
         return
 
     if menu_open:
+        return
+
+    if view_mode != "builder":
         return
 
     if event is InputEventKey and event.pressed and not event.echo:
@@ -463,12 +840,17 @@ func _unhandled_input(event: InputEvent) -> void:
         var mouse_button := event as InputEventMouseButton
         if mouse_button.button_index == MOUSE_BUTTON_WHEEL_UP and mouse_button.pressed:
             _zoom_camera(-1.0)
+            _mark_ship_changed()
             return
         if mouse_button.button_index == MOUSE_BUTTON_WHEEL_DOWN and mouse_button.pressed:
             _zoom_camera(1.0)
+            _mark_ship_changed()
             return
         if mouse_button.button_index == MOUSE_BUTTON_LEFT:
+            var was_dragging := camera_dragging
             camera_dragging = mouse_button.pressed
+            if was_dragging and not camera_dragging:
+                _mark_ship_changed()
             return
 
     if event is InputEventMouseMotion and camera_dragging:
@@ -481,6 +863,7 @@ func _unhandled_input(event: InputEvent) -> void:
             touch_points[touch.index] = touch.position
         else:
             touch_points.erase(touch.index)
+            _mark_ship_changed()
         if touch_points.size() == 2:
             var values := touch_points.values()
             pinch_previous_distance = (values[0] as Vector2).distance_to(values[1] as Vector2)
@@ -504,16 +887,25 @@ func _unhandled_input(event: InputEvent) -> void:
 func _handle_menu_back() -> void:
     if not menu_open:
         _open_menu()
-    elif menu_state == "root":
-        _close_menu()
-    else:
-        _show_root_menu()
+        return
+
+    match menu_state:
+        "root":
+            _close_menu()
+        "model_delete_confirm":
+            _show_ship_model_menu(menu_ship_id)
+        "model_actions":
+            _close_menu()
+        _:
+            _show_root_menu()
 
 func _open_menu() -> void:
     menu_open = true
     menu_dim.visible = true
     menu_panel.visible = true
     gear_button.visible = false
+    if selector_gear_button != null:
+        selector_gear_button.visible = false
     controls_root.visible = false
     _show_root_menu()
 
@@ -522,7 +914,11 @@ func _close_menu() -> void:
     menu_open = false
     menu_dim.visible = false
     menu_panel.visible = false
-    gear_button.visible = true
+    menu_ship_id = ""
+
+    gear_button.visible = view_mode == "builder"
+    if selector_gear_button != null:
+        selector_gear_button.visible = view_mode == "selector"
     _refresh_controls_visibility()
 
 func _clear_menu_content() -> void:
@@ -532,18 +928,25 @@ func _clear_menu_content() -> void:
 func _show_root_menu() -> void:
     waiting_for_binding = false
     menu_state = "root"
+    menu_ship_id = ""
     _clear_menu_content()
 
     var title := _menu_title("SPACE MINER")
     menu_content.add_child(title)
     menu_content.add_spacer(false)
 
-    for spec in [
+    var specs: Array = [
         ["Resume", "resume"],
+    ]
+    if view_mode == "builder":
+        specs.append(["Ship Models", "ships"])
+    specs.append_array([
         ["Display", "display"],
         ["Controls", "controls"],
         ["Exit", "exit"],
-    ]:
+    ])
+
+    for spec in specs:
         var button := Button.new()
         button.text = spec[0]
         button.custom_minimum_size = Vector2(0.0, 56.0)
@@ -554,12 +957,136 @@ func _root_menu_action(action: String) -> void:
     match action:
         "resume":
             _close_menu()
+        "ships":
+            _return_to_ship_selector()
         "display":
             _show_display_menu()
         "controls":
             _show_controls_menu()
         "exit":
+            if view_mode == "builder":
+                _save_current_ship_model()
             get_tree().quit()
+
+func _open_ship_model_menu(model_id: String) -> void:
+    menu_ship_id = model_id
+    menu_open = true
+    menu_dim.visible = true
+    menu_panel.visible = true
+    gear_button.visible = false
+    selector_gear_button.visible = false
+    controls_root.visible = false
+    _show_ship_model_menu(model_id)
+
+func _show_ship_model_menu(model_id: String) -> void:
+    menu_state = "model_actions"
+    menu_ship_id = model_id
+    _clear_menu_content()
+
+    var metadata := ShipStore.get_model_metadata(model_id)
+    var model_name := str(metadata.get("name", "Ship Model"))
+
+    var header := HBoxContainer.new()
+    header.add_theme_constant_override("separation", 10)
+    menu_content.add_child(header)
+
+    var back := Button.new()
+    back.text = "← Back"
+    back.pressed.connect(_close_menu)
+    header.add_child(back)
+
+    var title := _menu_title(model_name)
+    title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    header.add_child(title)
+
+    menu_content.add_spacer(false)
+
+    var export_button := Button.new()
+    export_button.text = "Export"
+    export_button.custom_minimum_size = Vector2(0.0, 56.0)
+    export_button.pressed.connect(_export_ship_model.bind(model_id))
+    menu_content.add_child(export_button)
+
+    var delete_button := Button.new()
+    delete_button.text = "Delete"
+    delete_button.custom_minimum_size = Vector2(0.0, 56.0)
+    delete_button.pressed.connect(_show_delete_ship_confirmation.bind(model_id))
+    menu_content.add_child(delete_button)
+
+func _show_delete_ship_confirmation(model_id: String) -> void:
+    menu_state = "model_delete_confirm"
+    menu_ship_id = model_id
+    _clear_menu_content()
+
+    var metadata := ShipStore.get_model_metadata(model_id)
+    var model_name := str(metadata.get("name", "Ship Model"))
+
+    var header := HBoxContainer.new()
+    header.add_theme_constant_override("separation", 10)
+    menu_content.add_child(header)
+
+    var back := Button.new()
+    back.text = "← Back"
+    back.pressed.connect(_show_ship_model_menu.bind(model_id))
+    header.add_child(back)
+
+    var title := _menu_title("Delete")
+    title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    header.add_child(title)
+
+    var prompt := Label.new()
+    prompt.text = "Delete %s?" % model_name
+    prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    prompt.add_theme_font_size_override("font_size", 22)
+    menu_content.add_child(prompt)
+
+    var warning := Label.new()
+    warning.text = "This removes the saved ship model and its thumbnail."
+    warning.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    warning.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    warning.modulate.a = 0.78
+    menu_content.add_child(warning)
+
+    var delete_button := Button.new()
+    delete_button.text = "Delete"
+    delete_button.custom_minimum_size = Vector2(0.0, 56.0)
+    delete_button.pressed.connect(_confirm_delete_ship_model.bind(model_id))
+    menu_content.add_child(delete_button)
+
+    var cancel_button := Button.new()
+    cancel_button.text = "Cancel"
+    cancel_button.custom_minimum_size = Vector2(0.0, 56.0)
+    cancel_button.pressed.connect(_show_ship_model_menu.bind(model_id))
+    menu_content.add_child(cancel_button)
+
+func _confirm_delete_ship_model(model_id: String) -> void:
+    ShipStore.delete_model(model_id)
+    _close_menu()
+    _rebuild_ship_selector()
+
+func _export_ship_model(model_id: String) -> void:
+    var metadata := ShipStore.get_model_metadata(model_id)
+    var model_name := str(metadata.get("name", "Ship Model"))
+
+    var dialog := FileDialog.new()
+    dialog.title = "Export Ship Model"
+    dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+    dialog.access = FileDialog.ACCESS_FILESYSTEM
+    dialog.use_native_dialog = true
+    dialog.filters = PackedStringArray(["*.json ; Space Miner Ship Model"])
+    dialog.current_file = model_name.validate_filename() + ".json"
+    dialog.file_selected.connect(_on_ship_export_path_selected.bind(model_id, dialog))
+    dialog.canceled.connect(dialog.queue_free)
+    ui_root.add_child(dialog)
+    dialog.popup_centered_ratio(0.62)
+
+func _on_ship_export_path_selected(
+    path: String,
+    model_id: String,
+    dialog: FileDialog
+) -> void:
+    ShipStore.export_model(model_id, path)
+    dialog.queue_free()
 
 func _show_display_menu() -> void:
     menu_state = "display"
@@ -1231,6 +1758,7 @@ func _place_current_part() -> void:
         ]
     )
     _refresh_selection_highlight()
+    _mark_ship_changed()
     AppLogger.event("PLACE complete part=%s" % part_id)
 
 func _remove_current_part() -> void:
@@ -1239,6 +1767,7 @@ func _remove_current_part() -> void:
         return
     _delete_placed_node(node)
     _refresh_selection_highlight()
+    _mark_ship_changed()
     if PartFactory.is_color_tool(selected_part):
         _refresh_color_controls()
 
@@ -1331,6 +1860,7 @@ func _apply_color_tool() -> void:
 
     PartFactory.apply_colors(target, colors, false)
     _refresh_selection_highlight()
+    _mark_ship_changed()
 
 func _refresh_selection_highlight() -> void:
     if selection_highlight_root == null:
