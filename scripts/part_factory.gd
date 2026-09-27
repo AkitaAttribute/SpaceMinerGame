@@ -268,8 +268,14 @@ static func _material(color: Color, ghost: bool, double_sided := false) -> Stand
         final_color.a = 0.46
         material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
     material.albedo_color = final_color
+
+    # Ship-builder parts are editor geometry, not scene-lit objects. Keep every
+    # color region completely flat/unshaded so adjacent pieces read as one model
+    # instead of each procedural mesh picking up its own lighting gradient.
+    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
     material.metallic = 0.0
-    material.roughness = 0.82
+    material.roughness = 1.0
+
     if double_sided:
         # Hollow thrusters have intentionally visible inner and outer walls.
         # Disabling culling prevents the shell from disappearing at grazing
