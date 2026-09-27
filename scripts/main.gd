@@ -535,9 +535,23 @@ func _open_ship_model(model_id: String) -> void:
     _show_builder()
 
 func _return_to_ship_selector() -> void:
-    if view_mode == "builder":
-        _save_current_ship_model()
+    if view_mode != "builder":
+        _close_menu()
+        _show_ship_selector()
+        return
+
+    _save_current_ship_model()
     _close_menu()
+
+    # Give the viewport one clean frame after the settings overlay disappears,
+    # then capture the exact camera angle being left before showing the selector.
+    var timer := get_tree().create_timer(0.05)
+    timer.timeout.connect(_finish_return_to_ship_selector, CONNECT_ONE_SHOT)
+
+func _finish_return_to_ship_selector() -> void:
+    if view_mode != "builder":
+        return
+    _capture_current_ship_thumbnail()
     _show_ship_selector()
 
 func _clear_ship_builder() -> void:
