@@ -950,14 +950,14 @@ func _show_root_menu() -> void:
 
     var specs: Array = [
         ["Resume", "resume"],
-    ]
-    if view_mode == "builder":
-        specs.append(["Ship Models", "ships"])
-    specs.append_array([
         ["Display", "display"],
         ["Controls", "controls"],
-        ["Exit", "exit"],
-    ])
+    ]
+
+    if view_mode == "builder":
+        specs.append(["Exit to Ship Selector", "ships"])
+    else:
+        specs.append(["Exit", "exit"])
 
     for spec in specs:
         var button := Button.new()
