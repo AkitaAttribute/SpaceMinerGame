@@ -15,6 +15,9 @@ Godot 4.7.1 prototype for a modular, grid-based spacecraft construction interfac
 - Center D-pad / Space places the current piece. Delete removes the piece anchored at the current cursor.
 - Settings menu with Resume, Display, Controls, and Exit. Display supports System/Light/Dark and reads the OS preference in System mode.
 - Controls menu allows every keyboard action to be rebound, including primary and alternate D-pad bindings.
+- Startup ship-model selector with persistent local models, centered thumbnail/name/action rows, and a top-center Add button.
+- Returning from the builder stores the ship geometry, colors, camera orientation, and a thumbnail captured at the last editor angle.
+- Per-model gear menu supports JSON export and nested delete confirmation; the selector also exposes the shared application settings gear at top right.
 
 ## Build
 
