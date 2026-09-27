@@ -58,6 +58,9 @@ var selector_gear_button: Button
 var view_mode := "selector"
 var current_ship_id := ""
 var menu_ship_id := ""
+var thumbnail_capture_pending := false
+var thumbnail_capture_ship_id := ""
+var thumbnail_after_capture: Callable
 
 var parts_open := false
 var parts_scroll_dragging := false
@@ -373,13 +376,24 @@ func _build_ship_selector() -> void:
     selector_background.mouse_filter = Control.MOUSE_FILTER_IGNORE
     selector_root.add_child(selector_background)
 
+    var top_actions := HBoxContainer.new()
+    top_actions.set_anchors_preset(Control.PRESET_CENTER_TOP)
+    top_actions.position = Vector2(-174.0, 28.0)
+    top_actions.size = Vector2(348.0, 52.0)
+    top_actions.add_theme_constant_override("separation", 12)
+    selector_root.add_child(top_actions)
+
     var add_button := Button.new()
     add_button.text = "+ Add"
-    add_button.custom_minimum_size = Vector2(160.0, 52.0)
-    add_button.set_anchors_preset(Control.PRESET_CENTER_TOP)
-    add_button.position = Vector2(-80.0, 28.0)
+    add_button.custom_minimum_size = Vector2(168.0, 52.0)
     add_button.pressed.connect(_create_ship_model)
-    selector_root.add_child(add_button)
+    top_actions.add_child(add_button)
+
+    var import_button := Button.new()
+    import_button.text = "Import"
+    import_button.custom_minimum_size = Vector2(168.0, 52.0)
+    import_button.pressed.connect(_open_import_menu)
+    top_actions.add_child(import_button)
 
     selector_gear_button = Button.new()
     selector_gear_button.text = "⚙"
@@ -481,6 +495,136 @@ func _add_ship_selector_row(metadata: Dictionary) -> void:
     model_gear.pressed.connect(_open_ship_model_menu.bind(model_id))
     content.add_child(model_gear)
 
+func _open_import_menu() -> void:
+    menu_open = true
+    menu_dim.visible = true
+    menu_panel.visible = true
+    gear_button.visible = false
+    selector_gear_button.visible = false
+    controls_root.visible = false
+    _show_import_menu()
+
+func _show_import_menu() -> void:
+    menu_state = "import"
+    menu_ship_id = ""
+    _clear_menu_content()
+    _add_submenu_header("Import Ship")
+
+    var file_button := Button.new()
+    file_button.text = "Import From File"
+    file_button.custom_minimum_size = Vector2(0.0, 56.0)
+    file_button.pressed.connect(_import_ship_from_file)
+    menu_content.add_child(file_button)
+
+    var paste_button := Button.new()
+    paste_button.text = "Paste JSON"
+    paste_button.custom_minimum_size = Vector2(0.0, 56.0)
+    paste_button.pressed.connect(func(): _show_import_paste_menu())
+    menu_content.add_child(paste_button)
+
+func _show_import_paste_menu(raw_text := "", error_text := "") -> void:
+    menu_state = "import_paste"
+    _clear_menu_content()
+
+    var header := HBoxContainer.new()
+    header.add_theme_constant_override("separation", 10)
+    menu_content.add_child(header)
+
+    var back := Button.new()
+    back.text = "← Back"
+    back.pressed.connect(_show_import_menu)
+    header.add_child(back)
+
+    var title := _menu_title("Paste JSON")
+    title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    header.add_child(title)
+
+    if not error_text.is_empty():
+        var error_label := Label.new()
+        error_label.text = error_text
+        error_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        error_label.modulate = palette.get("danger", Color("#d96f78"))
+        menu_content.add_child(error_label)
+
+    var text_edit := TextEdit.new()
+    text_edit.custom_minimum_size = Vector2(0.0, 245.0)
+    text_edit.placeholder_text = "Paste a Space Miner ship JSON object here."
+    text_edit.text = raw_text
+    menu_content.add_child(text_edit)
+
+    var paste_clipboard := Button.new()
+    paste_clipboard.text = "Paste From Clipboard"
+    paste_clipboard.custom_minimum_size = Vector2(0.0, 48.0)
+    paste_clipboard.pressed.connect(func():
+        if DisplayServer.clipboard_has():
+            text_edit.text = DisplayServer.clipboard_get()
+    )
+    menu_content.add_child(paste_clipboard)
+
+    var import_button := Button.new()
+    import_button.text = "Import JSON"
+    import_button.custom_minimum_size = Vector2(0.0, 56.0)
+    import_button.pressed.connect(_import_ship_from_text_field.bind(text_edit))
+    menu_content.add_child(import_button)
+
+func _import_ship_from_text_field(text_edit: TextEdit) -> void:
+    var raw_json := text_edit.text
+    var result := ShipStore.import_json(raw_json)
+    if not bool(result.get("ok", false)):
+        _show_import_paste_menu(raw_json, str(result.get("error", "Import failed.")))
+        return
+
+    _close_menu()
+    _rebuild_ship_selector()
+
+func _import_ship_from_file() -> void:
+    var filters := PackedStringArray([
+        "*.json;Space Miner Ship Model;application/json",
+    ])
+
+    if DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
+        DisplayServer.file_dialog_show(
+            "Import Ship Model",
+            "",
+            "",
+            false,
+            DisplayServer.FILE_DIALOG_MODE_OPEN_FILE,
+            filters,
+            _on_native_ship_import_selected
+        )
+        return
+
+    var dialog := FileDialog.new()
+    dialog.title = "Import Ship Model"
+    dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+    dialog.access = FileDialog.ACCESS_FILESYSTEM
+    dialog.filters = filters
+    dialog.file_selected.connect(func(path: String):
+        _import_ship_path(path)
+        dialog.queue_free()
+    )
+    dialog.canceled.connect(dialog.queue_free)
+    ui_root.add_child(dialog)
+    dialog.popup_centered_ratio(0.62)
+
+func _on_native_ship_import_selected(
+    status: bool,
+    selected_paths: PackedStringArray,
+    _selected_filter_index: int
+) -> void:
+    if not status or selected_paths.is_empty():
+        return
+    _import_ship_path(selected_paths[0])
+
+func _import_ship_path(path: String) -> void:
+    var result := ShipStore.import_file(path)
+    if not bool(result.get("ok", false)):
+        _show_import_paste_menu("", str(result.get("error", "Import failed.")))
+        return
+
+    _close_menu()
+    _rebuild_ship_selector()
+
 func _show_ship_selector() -> void:
     view_mode = "selector"
     current_ship_id = ""
@@ -551,8 +695,7 @@ func _return_to_ship_selector() -> void:
 func _finish_return_to_ship_selector() -> void:
     if view_mode != "builder":
         return
-    _capture_current_ship_thumbnail()
-    _show_ship_selector()
+    _capture_current_ship_thumbnail(_show_ship_selector)
 
 func _clear_ship_builder() -> void:
     placed_parts.clear()
@@ -700,27 +843,64 @@ func _basis_from_json(value) -> Basis:
         Vector3(float(value[6]), float(value[7]), float(value[8]))
     ).orthonormalized()
 
-func _capture_current_ship_thumbnail() -> void:
+func _capture_current_ship_thumbnail(after_capture := Callable()) -> void:
     if current_ship_id.is_empty() or view_mode != "builder":
+        if after_capture.is_valid():
+            after_capture.call()
         return
 
-    var image := get_viewport().get_texture().get_image()
-    if image == null or image.is_empty():
+    if thumbnail_capture_pending:
+        if after_capture.is_valid():
+            thumbnail_after_capture = after_capture
         return
 
-    var width := image.get_width()
-    var height := image.get_height()
-    var crop_width := mini(width, 640)
-    var crop_height := int(round(float(crop_width) * 9.0 / 16.0))
-    crop_height = mini(crop_height, height)
+    thumbnail_capture_pending = true
+    thumbnail_capture_ship_id = current_ship_id
+    thumbnail_after_capture = after_capture
 
-    var crop_x := maxi(0, (width - crop_width) / 2)
-    var crop_y := maxi(0, (height - crop_height) / 2)
-    var thumbnail := image.get_region(
-        Rect2i(crop_x, crop_y, crop_width, crop_height)
+    # Thumbnails represent the ship and last camera angle, not editor aids.
+    grid_root.visible = false
+    ghost_root.visible = false
+    selection_highlight_root.visible = false
+    rotation_guide_root.visible = false
+
+    get_tree().process_frame.connect(
+        _finish_current_ship_thumbnail_capture,
+        CONNECT_ONE_SHOT
     )
-    thumbnail.resize(320, 180, Image.INTERPOLATE_LANCZOS)
-    ShipStore.save_thumbnail(current_ship_id, thumbnail)
+
+func _finish_current_ship_thumbnail_capture() -> void:
+    var ship_id := thumbnail_capture_ship_id
+    if not ship_id.is_empty():
+        var image := get_viewport().get_texture().get_image()
+        if image != null and not image.is_empty():
+            var width := image.get_width()
+            var height := image.get_height()
+            var crop_width := mini(width, 640)
+            var crop_height := int(round(float(crop_width) * 9.0 / 16.0))
+            crop_height = mini(crop_height, height)
+
+            var crop_x := maxi(0, (width - crop_width) / 2)
+            var crop_y := maxi(0, (height - crop_height) / 2)
+            var thumbnail := image.get_region(
+                Rect2i(crop_x, crop_y, crop_width, crop_height)
+            )
+            thumbnail.resize(320, 180, Image.INTERPOLATE_LANCZOS)
+            ShipStore.save_thumbnail(ship_id, thumbnail)
+
+    thumbnail_capture_pending = false
+    thumbnail_capture_ship_id = ""
+
+    if view_mode == "builder":
+        grid_root.visible = true
+        ghost_root.visible = true
+        selection_highlight_root.visible = true
+        rotation_guide_root.visible = true
+
+    var callback := thumbnail_after_capture
+    thumbnail_after_capture = Callable()
+    if callback.is_valid():
+        callback.call()
 
 func _mark_ship_changed() -> void:
     if view_mode != "builder" or current_ship_id.is_empty():
@@ -905,10 +1085,12 @@ func _handle_menu_back() -> void:
     match menu_state:
         "root":
             _close_menu()
-        "model_delete_confirm":
+        "model_delete_confirm", "model_rename":
             _show_ship_model_menu(menu_ship_id)
-        "model_actions":
+        "model_actions", "import":
             _close_menu()
+        "import_paste":
+            _show_import_menu()
         _:
             _show_root_menu()
 
@@ -1014,17 +1196,79 @@ func _show_ship_model_menu(model_id: String) -> void:
 
     menu_content.add_spacer(false)
 
+    var rename_button := Button.new()
+    rename_button.text = "Rename"
+    rename_button.custom_minimum_size = Vector2(0.0, 56.0)
+    rename_button.pressed.connect(_show_rename_ship_menu.bind(model_id))
+    menu_content.add_child(rename_button)
+
     var export_button := Button.new()
-    export_button.text = "Export"
+    export_button.text = "Export JSON"
     export_button.custom_minimum_size = Vector2(0.0, 56.0)
     export_button.pressed.connect(_export_ship_model.bind(model_id))
     menu_content.add_child(export_button)
+
+    var clipboard_button := Button.new()
+    clipboard_button.text = "Copy JSON to Clipboard"
+    clipboard_button.custom_minimum_size = Vector2(0.0, 56.0)
+    clipboard_button.pressed.connect(_copy_ship_json_to_clipboard.bind(model_id))
+    menu_content.add_child(clipboard_button)
 
     var delete_button := Button.new()
     delete_button.text = "Delete"
     delete_button.custom_minimum_size = Vector2(0.0, 56.0)
     delete_button.pressed.connect(_show_delete_ship_confirmation.bind(model_id))
     menu_content.add_child(delete_button)
+
+func _show_rename_ship_menu(model_id: String) -> void:
+    menu_state = "model_rename"
+    menu_ship_id = model_id
+    _clear_menu_content()
+
+    var metadata := ShipStore.get_model_metadata(model_id)
+    var model_name := str(metadata.get("name", "Ship Model"))
+
+    var header := HBoxContainer.new()
+    header.add_theme_constant_override("separation", 10)
+    menu_content.add_child(header)
+
+    var back := Button.new()
+    back.text = "← Back"
+    back.pressed.connect(_show_ship_model_menu.bind(model_id))
+    header.add_child(back)
+
+    var title := _menu_title("Rename")
+    title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    header.add_child(title)
+
+    var name_edit := LineEdit.new()
+    name_edit.text = model_name
+    name_edit.placeholder_text = "Ship name"
+    name_edit.custom_minimum_size = Vector2(0.0, 52.0)
+    name_edit.select_all()
+    menu_content.add_child(name_edit)
+
+    var rename_button := Button.new()
+    rename_button.text = "Rename"
+    rename_button.custom_minimum_size = Vector2(0.0, 56.0)
+    rename_button.pressed.connect(_rename_ship_model.bind(model_id, name_edit))
+    menu_content.add_child(rename_button)
+    name_edit.text_submitted.connect(func(_text: String):
+        _rename_ship_model(model_id, name_edit)
+    )
+    name_edit.grab_focus()
+
+func _rename_ship_model(model_id: String, name_edit: LineEdit) -> void:
+    if not ShipStore.rename_model(model_id, name_edit.text):
+        return
+    _show_ship_model_menu(model_id)
+    _rebuild_ship_selector()
+
+func _copy_ship_json_to_clipboard(model_id: String) -> void:
+    var json := ShipStore.get_export_json(model_id)
+    if json.is_empty():
+        return
+    DisplayServer.clipboard_set(json)
 
 func _show_delete_ship_confirmation(model_id: String) -> void:
     menu_state = "model_delete_confirm"
@@ -1080,26 +1324,49 @@ func _confirm_delete_ship_model(model_id: String) -> void:
 func _export_ship_model(model_id: String) -> void:
     var metadata := ShipStore.get_model_metadata(model_id)
     var model_name := str(metadata.get("name", "Ship Model"))
+    var filename := model_name.validate_filename() + ".json"
+    var filters := PackedStringArray([
+        "*.json;Space Miner Ship Model;application/json",
+    ])
+
+    # On Android, Godot's native file dialog uses the Storage Access Framework.
+    # The OS grants access to the user-selected URI, so broad storage permission
+    # is not requested or required.
+    if DisplayServer.has_feature(DisplayServer.FEATURE_NATIVE_DIALOG_FILE):
+        DisplayServer.file_dialog_show(
+            "Export Ship Model",
+            "",
+            filename,
+            false,
+            DisplayServer.FILE_DIALOG_MODE_SAVE_FILE,
+            filters,
+            _on_native_ship_export_selected.bind(model_id)
+        )
+        return
 
     var dialog := FileDialog.new()
     dialog.title = "Export Ship Model"
     dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
     dialog.access = FileDialog.ACCESS_FILESYSTEM
-    dialog.use_native_dialog = true
-    dialog.filters = PackedStringArray(["*.json ; Space Miner Ship Model"])
-    dialog.current_file = model_name.validate_filename() + ".json"
-    dialog.file_selected.connect(_on_ship_export_path_selected.bind(model_id, dialog))
+    dialog.filters = filters
+    dialog.current_file = filename
+    dialog.file_selected.connect(func(path: String):
+        ShipStore.export_model(model_id, path)
+        dialog.queue_free()
+    )
     dialog.canceled.connect(dialog.queue_free)
     ui_root.add_child(dialog)
     dialog.popup_centered_ratio(0.62)
 
-func _on_ship_export_path_selected(
-    path: String,
-    model_id: String,
-    dialog: FileDialog
+func _on_native_ship_export_selected(
+    status: bool,
+    selected_paths: PackedStringArray,
+    _selected_filter_index: int,
+    model_id: String
 ) -> void:
-    ShipStore.export_model(model_id, path)
-    dialog.queue_free()
+    if not status or selected_paths.is_empty():
+        return
+    ShipStore.export_model(model_id, selected_paths[0])
 
 func _show_display_menu() -> void:
     menu_state = "display"
