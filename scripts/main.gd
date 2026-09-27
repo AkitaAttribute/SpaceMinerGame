@@ -537,7 +537,6 @@ func _open_ship_model(model_id: String) -> void:
 func _return_to_ship_selector() -> void:
     if view_mode == "builder":
         _save_current_ship_model()
-        _capture_current_ship_thumbnail()
     _close_menu()
     _show_ship_selector()
 
