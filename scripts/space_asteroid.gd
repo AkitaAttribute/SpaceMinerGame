@@ -2,7 +2,7 @@ class_name SpaceAsteroid
 extends AnimatableBody3D
 
 const GRID_SIZE := 20
-const GRID_HEIGHT := 2
+const GRID_HEIGHT := 20
 const CELL_SIZE := 1.0
 
 var asteroid_id := ""
