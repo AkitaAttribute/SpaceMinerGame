@@ -1689,8 +1689,8 @@ func _apply_control_scale() -> void:
             if not control.has_meta("base_position") or not control.has_meta("base_size"):
                 continue
 
-            var base_position := control.get_meta("base_position") as Vector2
-            var base_size := control.get_meta("base_size") as Vector2
+            var base_position: Vector2 = control.get_meta("base_position", Vector2.ZERO)
+            var base_size: Vector2 = control.get_meta("base_size", Vector2.ZERO)
             control.position = base_position * scale_value
             control.size = base_size * scale_value
             control.custom_minimum_size = base_size * scale_value
