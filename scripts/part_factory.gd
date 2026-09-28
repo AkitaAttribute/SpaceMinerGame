@@ -70,6 +70,14 @@ const PARTS := [
         "rotation_reference": Vector3(0.0, 0.0, -1.0),
         "functional": true,
     },
+    {
+        "id": "mining_laser",
+        "name": "Mining Laser",
+        "slots": ["Housing"],
+        "defaults": [DEFAULT_PART_COLOR],
+        "rotation_reference": Vector3(0.0, -1.0, 0.0),
+        "functional": true,
+    },
 ]
 
 static func part_count() -> int:
@@ -126,6 +134,8 @@ static func create_part(index: int, colors: Array[Color], ghost := false) -> Nod
             _add_thruster_tier_1(root, colors, ghost)
         "thruster_t2":
             _add_thruster_tier_2(root, colors, ghost)
+        "mining_laser":
+            _add_mining_laser(root, colors, ghost)
         "color_tool":
             pass
         _:
@@ -260,6 +270,34 @@ static func _add_thruster_tier_2(root: Node3D, colors: Array[Color], ghost: bool
         0.33
     )
     _add_mesh(root, shell, colors[0], ghost, 0, Vector3.ZERO, Vector3.ZERO, true)
+
+static func _add_mining_laser(root: Node3D, colors: Array[Color], ghost: bool) -> void:
+    # The housing is the existing half-sphere geometry, with its flat face on
+    # local -Y. The tracking barrel pivots at the hemisphere's crown/origin.
+    _add_mesh(root, _hemisphere_mesh(), colors[0], ghost, 0)
+
+    var pivot := Node3D.new()
+    pivot.name = "MiningLaserPivot"
+    root.add_child(pivot)
+
+    # CylinderMesh is aligned to local Y. A 0.42-cell centerline with radius
+    # 0.055 has a furthest point sqrt(0.42^2 + 0.055^2) ~= 0.424 cells from
+    # the pivot, safely inside the 0.5-cell half extent for every rotation.
+    var barrel := CylinderMesh.new()
+    barrel.height = 0.42
+    barrel.top_radius = 0.055
+    barrel.bottom_radius = 0.055
+    barrel.radial_segments = 16
+    barrel.rings = 1
+    _add_mesh(
+        pivot,
+        barrel,
+        colors[0],
+        ghost,
+        0,
+        Vector3(0.0, 0.21, 0.0)
+    )
+
 
 static func _material(color: Color, ghost: bool, double_sided := false) -> StandardMaterial3D:
     var material := StandardMaterial3D.new()
