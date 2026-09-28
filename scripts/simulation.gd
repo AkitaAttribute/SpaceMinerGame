@@ -14,10 +14,9 @@ const LATERAL_DRAG := 2.8
 const RUDDER_GAIN := 0.032
 const YAW_DAMPING := 1.7
 const MAX_YAW_RATE := deg_to_rad(58.0)
-const COLLISION_POSITION_NUDGE := 1.25
-const COLLISION_TURN_ACCELERATION := deg_to_rad(85.0)
-const COLLISION_MAX_TURN_RATE := deg_to_rad(28.0)
-const COLLISION_SPEED_RETENTION := 0.78
+const COLLISION_RECOVERY_DURATION := 0.45
+const COLLISION_RECOVERY_PUSH_DISTANCE := 1.0
+const COLLISION_RECOVERY_TURN := PI * 0.5
 
 const MAX_HEEL := deg_to_rad(11.0)
 const HEEL_SPRING := 9.0
@@ -71,6 +70,13 @@ var sway_speed := 0.0
 var yaw_rate := 0.0
 var heel_angle := 0.0
 var heel_velocity := 0.0
+
+var collision_recovery_active := false
+var collision_recovery_elapsed := 0.0
+var collision_recovery_start_yaw := 0.0
+var collision_recovery_target_yaw := 0.0
+var collision_recovery_normal := Vector3.ZERO
+var collision_recovery_velocity := Vector3.ZERO
 var asteroid_update_time := 0.0
 var asteroid_spawn_sequence := 0
 var beam_time := 0.0
@@ -641,6 +647,10 @@ func _physics_process(delta: float) -> void:
 
 
 func _update_ship_motion(delta: float) -> void:
+    if collision_recovery_active:
+        _update_collision_recovery(delta)
+        return
+
     var throttle := 0.0
     var steer := 0.0
 
@@ -741,40 +751,9 @@ func _update_ship_motion(delta: float) -> void:
             valid_normals += 1
 
         if valid_normals > 0 and away_normal.length_squared() > 0.001:
-            away_normal = away_normal.normalized()
-
-            # Separate the hull gently without injecting a large sideways
-            # velocity impulse. Preserve the existing travel direction and only
-            # reduce its magnitude on contact.
-            ship_body.global_position += (
-                away_normal
-                * COLLISION_POSITION_NUDGE
-                * delta
-            )
-            ship_body.global_position.y = 0.0
-            ship_body.velocity = (
+            _begin_collision_recovery(
+                away_normal.normalized(),
                 pre_collision_velocity
-                * COLLISION_SPEED_RETENTION
-            )
-            ship_body.velocity.y = 0.0
-
-            # Turn the ship's nose gradually toward the collision normal
-            # (away from the asteroid). This changes heading rather than
-            # abruptly kicking the craft sideways across the plane.
-            var collision_forward := _ship_forward_world()
-            var away_angle := atan2(
-                collision_forward.cross(away_normal).y,
-                collision_forward.dot(away_normal)
-            )
-            var collision_target_yaw := clampf(
-                away_angle * 0.65,
-                -COLLISION_MAX_TURN_RATE,
-                COLLISION_MAX_TURN_RATE
-            )
-            yaw_rate = move_toward(
-                yaw_rate,
-                collision_target_yaw,
-                COLLISION_TURN_ACCELERATION * delta
             )
 
     forward = _ship_forward_world()
@@ -801,6 +780,94 @@ func _update_ship_motion(delta: float) -> void:
         or absf(steer) > 0.05
     )
     _set_thruster_emission(movement_active)
+
+
+func _begin_collision_recovery(
+    away_normal: Vector3,
+    preserved_velocity: Vector3
+) -> void:
+    collision_recovery_active = true
+    collision_recovery_elapsed = 0.0
+    collision_recovery_normal = away_normal
+    collision_recovery_velocity = preserved_velocity
+    collision_recovery_velocity.y = 0.0
+
+    collision_recovery_start_yaw = ship_body.rotation.y
+
+    # Choose the 90-degree direction whose resulting ship-forward points most
+    # away from the asteroid. The recovery turn is intentionally independent
+    # of the normal boat/rudder model.
+    var current_forward := _ship_forward_world()
+    var plus_forward := current_forward.rotated(
+        Vector3.UP,
+        COLLISION_RECOVERY_TURN
+    )
+    var minus_forward := current_forward.rotated(
+        Vector3.UP,
+        -COLLISION_RECOVERY_TURN
+    )
+
+    var turn_amount := COLLISION_RECOVERY_TURN
+    if minus_forward.dot(away_normal) > plus_forward.dot(away_normal):
+        turn_amount = -COLLISION_RECOVERY_TURN
+
+    collision_recovery_target_yaw = (
+        collision_recovery_start_yaw + turn_amount
+    )
+    yaw_rate = 0.0
+
+
+func _update_collision_recovery(delta: float) -> void:
+    var remaining_time := maxf(
+        0.0001,
+        COLLISION_RECOVERY_DURATION - collision_recovery_elapsed
+    )
+    var frame_time := minf(delta, remaining_time)
+
+    # Preserve the ship's existing movement vector. Collision recovery adds no
+    # acceleration and does not consume speed; move_and_slide only prevents the
+    # preserved motion from penetrating the asteroid.
+    ship_body.velocity = collision_recovery_velocity
+    ship_body.move_and_slide()
+    ship_body.velocity = collision_recovery_velocity
+    ship_body.velocity.y = 0.0
+
+    # Apply exactly one builder-cell of separation over the recovery interval.
+    # This is positional correction, not a velocity impulse.
+    var push_fraction := frame_time / COLLISION_RECOVERY_DURATION
+    ship_body.global_position += (
+        collision_recovery_normal
+        * COLLISION_RECOVERY_PUSH_DISTANCE
+        * push_fraction
+    )
+    ship_body.global_position.y = 0.0
+
+    collision_recovery_elapsed += frame_time
+    var progress := clampf(
+        collision_recovery_elapsed / COLLISION_RECOVERY_DURATION,
+        0.0,
+        1.0
+    )
+    var smooth_progress := progress * progress * (3.0 - 2.0 * progress)
+    ship_body.rotation.y = lerp_angle(
+        collision_recovery_start_yaw,
+        collision_recovery_target_yaw,
+        smooth_progress
+    )
+
+    # Do not let the visual heel exaggerate the forced avoidance turn.
+    heel_velocity = 0.0
+    heel_angle = move_toward(heel_angle, 0.0, delta * 1.8)
+    ship_visual_root.rotation.z = heel_angle
+
+    _set_thruster_emission(collision_recovery_velocity.length_squared() > 0.01)
+
+    if collision_recovery_elapsed >= COLLISION_RECOVERY_DURATION:
+        ship_body.rotation.y = collision_recovery_target_yaw
+        ship_body.velocity = collision_recovery_velocity
+        collision_recovery_active = false
+        collision_recovery_elapsed = 0.0
+        yaw_rate = 0.0
 
 
 func _update_camera(delta: float) -> void:
