@@ -21,9 +21,11 @@ const HEEL_SPRING := 9.0
 const HEEL_DAMPING := 5.4
 const HEEL_STABILITY := 1.35
 
-const ASTEROID_SECTOR_SIZE := 48.0
-const ASTEROID_KEEP_DISTANCE := 92.0
+const ASTEROID_SECTOR_SIZE := 120.0
+const ASTEROID_KEEP_DISTANCE := 210.0
 const ASTEROID_UPDATE_INTERVAL := 0.75
+const ASTEROID_SECTOR_SPAWN_CHANCE := 0.28
+const ASTEROID_SPAWN_CLEARANCE := 26.0
 
 const TRACTOR_START_SPEED := 3.0
 const TRACTOR_ACCELERATION := 4.5
@@ -64,6 +66,9 @@ var menu_panel: PanelContainer
 var menu_content: VBoxContainer
 var menu_open := false
 
+var mobile_joystick: VirtualJoystick
+var mobile_steering := Vector2.ZERO
+
 
 func _ready() -> void:
     process_mode = Node.PROCESS_MODE_ALWAYS
@@ -78,8 +83,8 @@ func _ready() -> void:
     _build_environment()
     _build_simulation_roots()
     _load_ship()
-    _spawn_initial_asteroids()
     _build_camera()
+    _spawn_initial_asteroids()
     _build_ui()
 
     if "--simulation-smoke" in OS.get_cmdline_user_args():
@@ -343,11 +348,16 @@ func _build_ui() -> void:
     root.theme = SpaceMinerTheme.build(AppSettings.is_dark_theme())
     ui_layer.add_child(root)
 
-    var help := Label.new()
-    help.position = Vector2(18.0, 16.0)
-    help.text = "W/S: throttle    A/D: steer"
-    help.modulate.a = 0.72
-    root.add_child(help)
+    if _is_mobile_platform():
+        mobile_joystick = VirtualJoystick.new()
+        mobile_joystick.name = "FlightJoystick"
+        mobile_joystick.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+        mobile_joystick.offset_left = 24.0
+        mobile_joystick.offset_top = -244.0
+        mobile_joystick.offset_right = 244.0
+        mobile_joystick.offset_bottom = -24.0
+        mobile_joystick.vector_changed.connect(_on_mobile_joystick_changed)
+        root.add_child(mobile_joystick)
 
     gear_button = Button.new()
     gear_button.text = "⚙"
@@ -385,6 +395,18 @@ func _build_ui() -> void:
     margin.add_child(menu_content)
 
 
+func _is_mobile_platform() -> bool:
+    return (
+        OS.has_feature("android")
+        or OS.has_feature("ios")
+        or OS.has_feature("mobile")
+    )
+
+
+func _on_mobile_joystick_changed(value: Vector2) -> void:
+    mobile_steering = value
+
+
 func _unhandled_input(event: InputEvent) -> void:
     if event.is_action_pressed(&"menu_back"):
         if menu_open:
@@ -396,6 +418,9 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _open_menu() -> void:
     menu_open = true
+    mobile_steering = Vector2.ZERO
+    if mobile_joystick != null:
+        mobile_joystick.reset()
     menu_dim.visible = true
     menu_panel.visible = true
     gear_button.visible = false
@@ -461,6 +486,10 @@ func _update_ship_motion(delta: float) -> void:
         Input.get_action_strength(&"builder_right")
         - Input.get_action_strength(&"builder_left")
     )
+
+    if _is_mobile_platform():
+        throttle = clampf(throttle - mobile_steering.y, -1.0, 1.0)
+        steer = clampf(steer + mobile_steering.x, -1.0, 1.0)
 
     # Resolve the existing inertial velocity into the hull's current axes.
     # We then apply surge and sway forces back into world velocity rather than
@@ -594,8 +623,9 @@ func _update_camera(delta: float) -> void:
 
 
 func _spawn_initial_asteroids() -> void:
-    _spawn_asteroid("origin_a", Vector3(16.0, 0.0, -7.0), 1001)
-    _spawn_asteroid("origin_b", Vector3(-17.0, 0.0, 8.0), 2003)
+    # One deliberately placed asteroid gives the player something to approach
+    # without putting either the ship or third-person camera inside a 20^3 body.
+    _spawn_asteroid("origin_a", Vector3(0.0, 0.0, -28.0), 1001)
     _refresh_asteroid_sectors()
 
 
@@ -618,6 +648,7 @@ func _refresh_asteroid_sectors() -> void:
         for sz in range(current_z - 1, current_z + 2):
             if sx == 0 and sz == 0:
                 continue
+
             var key := "%d:%d" % [sx, sz]
             if asteroids.has(key):
                 continue
@@ -625,11 +656,21 @@ func _refresh_asteroid_sectors() -> void:
             var seed_value: int = int(abs(hash(Vector2i(sx, sz))))
             var rng := RandomNumberGenerator.new()
             rng.seed = seed_value
+
+            # Large 20x20x20 bodies should feel isolated rather than forming a
+            # wall of asteroids. The deterministic roll keeps sector contents
+            # stable as sectors unload/reload.
+            if rng.randf() > ASTEROID_SECTOR_SPAWN_CHANCE:
+                continue
+
             var position := Vector3(
-                float(sx) * ASTEROID_SECTOR_SIZE + rng.randf_range(-7.0, 7.0),
+                float(sx) * ASTEROID_SECTOR_SIZE + rng.randf_range(-24.0, 24.0),
                 0.0,
-                float(sz) * ASTEROID_SECTOR_SIZE + rng.randf_range(-7.0, 7.0)
+                float(sz) * ASTEROID_SECTOR_SIZE + rng.randf_range(-24.0, 24.0)
             )
+            if not _asteroid_spawn_is_clear(position):
+                continue
+
             _spawn_asteroid(key, position, seed_value)
 
     var remove_keys: Array[String] = []
@@ -649,11 +690,31 @@ func _refresh_asteroid_sectors() -> void:
         asteroids.erase(key)
 
 
+func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
+    if world_position.distance_to(ship_body.global_position) < ASTEROID_SPAWN_CLEARANCE:
+        return false
+
+    if camera != null and world_position.distance_to(camera.global_position) < ASTEROID_SPAWN_CLEARANCE:
+        return false
+
+    for value in asteroids.values():
+        if value == null or not is_instance_valid(value):
+            continue
+        var asteroid := value as SpaceAsteroid
+        if world_position.distance_to(asteroid.global_position) < ASTEROID_SECTOR_SIZE * 0.52:
+            return false
+
+    return true
+
+
 func _spawn_asteroid(
     key: String,
     world_position: Vector3,
     seed_value: int
 ) -> void:
+    if not _asteroid_spawn_is_clear(world_position):
+        return
+
     var asteroid := SpaceAsteroid.new()
     asteroid.name = "Asteroid_" + key.replace(":", "_")
     asteroid_root.add_child(asteroid)
