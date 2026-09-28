@@ -83,6 +83,47 @@ func closest_cell_world(from_world: Vector3) -> Vector3:
     return best_position
 
 
+func distance_from_world_cell_to_hitbox(
+    cell_center_world: Vector3,
+    cell_basis_world: Basis,
+    cell_half_extent := 0.5
+) -> float:
+    # Asteroid collision is one 20x20x20 BoxShape3D centered on this body.
+    # Find the nearest point on that oriented hitbox to the laser-cell center,
+    # then subtract the laser cell's support radius in that direction. This
+    # makes range start at the edge of the laser's 1x1x1 builder cell rather
+    # than at the laser pivot/barrel.
+    var half_extents := Vector3(
+        float(GRID_SIZE) * CELL_SIZE * 0.5,
+        float(GRID_HEIGHT) * CELL_SIZE * 0.5,
+        float(GRID_SIZE) * CELL_SIZE * 0.5
+    )
+
+    var center_local := to_local(cell_center_world)
+    var nearest_local := Vector3(
+        clampf(center_local.x, -half_extents.x, half_extents.x),
+        clampf(center_local.y, -half_extents.y, half_extents.y),
+        clampf(center_local.z, -half_extents.z, half_extents.z)
+    )
+    var separation_local := center_local - nearest_local
+    var center_distance := separation_local.length()
+
+    if center_distance <= 0.000001:
+        return 0.0
+
+    var separation_world := (
+        global_basis * separation_local.normalized()
+    ).normalized()
+    var cell_basis := cell_basis_world.orthonormalized()
+    var cell_support := cell_half_extent * (
+        absf(separation_world.dot(cell_basis.x))
+        + absf(separation_world.dot(cell_basis.y))
+        + absf(separation_world.dot(cell_basis.z))
+    )
+
+    return maxf(0.0, center_distance - cell_support)
+
+
 func distance_to_surface(from_world: Vector3) -> float:
     if _surface_cells.is_empty():
         return INF
