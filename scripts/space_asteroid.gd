@@ -25,7 +25,8 @@ var _removed_cells: Dictionary = {}
 var _surface_cells: Array[Vector3i] = []
 var _remaining_cells := TOTAL_CELLS
 var _visual: MeshInstance3D
-var _collision_shape: CollisionShape3D
+var _collision_shapes: Array[CollisionShape3D] = []
+var _collision_boxes: Array[AABB] = []
 
 
 func configure(id_value: String, world_position: Vector3, seed_value: int) -> void:
@@ -88,40 +89,42 @@ func distance_from_world_cell_to_hitbox(
     cell_basis_world: Basis,
     cell_half_extent := 0.5
 ) -> float:
-    # Asteroid collision is one 20x20x20 BoxShape3D centered on this body.
-    # Find the nearest point on that oriented hitbox to the laser-cell center,
-    # then subtract the laser cell's support radius in that direction. This
-    # makes range start at the edge of the laser's 1x1x1 builder cell rather
-    # than at the laser pivot/barrel.
-    var half_extents := Vector3(
-        float(GRID_SIZE) * CELL_SIZE * 0.5,
-        float(GRID_HEIGHT) * CELL_SIZE * 0.5,
-        float(GRID_SIZE) * CELL_SIZE * 0.5
-    )
+    if _collision_boxes.is_empty():
+        return INF
 
+    # Collision is represented by merged boxes made only from occupied cells.
+    # Measure against the nearest of those boxes, then subtract the support
+    # radius of the laser's 1x1x1 builder cell in the separation direction.
     var center_local := to_local(cell_center_world)
-    var nearest_local := Vector3(
-        clampf(center_local.x, -half_extents.x, half_extents.x),
-        clampf(center_local.y, -half_extents.y, half_extents.y),
-        clampf(center_local.z, -half_extents.z, half_extents.z)
-    )
-    var separation_local := center_local - nearest_local
-    var center_distance := separation_local.length()
-
-    if center_distance <= 0.000001:
-        return 0.0
-
-    var separation_world := (
-        global_basis * separation_local.normalized()
-    ).normalized()
     var cell_basis := cell_basis_world.orthonormalized()
-    var cell_support := cell_half_extent * (
-        absf(separation_world.dot(cell_basis.x))
-        + absf(separation_world.dot(cell_basis.y))
-        + absf(separation_world.dot(cell_basis.z))
-    )
+    var best_distance := INF
 
-    return maxf(0.0, center_distance - cell_support)
+    for box in _collision_boxes:
+        var nearest_local := Vector3(
+            clampf(center_local.x, box.position.x, box.end.x),
+            clampf(center_local.y, box.position.y, box.end.y),
+            clampf(center_local.z, box.position.z, box.end.z)
+        )
+        var separation_local := center_local - nearest_local
+        var center_distance := separation_local.length()
+
+        if center_distance <= 0.000001:
+            return 0.0
+
+        var separation_world := (
+            global_basis * separation_local.normalized()
+        ).normalized()
+        var cell_support := cell_half_extent * (
+            absf(separation_world.dot(cell_basis.x))
+            + absf(separation_world.dot(cell_basis.y))
+            + absf(separation_world.dot(cell_basis.z))
+        )
+        best_distance = minf(
+            best_distance,
+            maxf(0.0, center_distance - cell_support)
+        )
+
+    return best_distance
 
 
 func distance_to_surface(from_world: Vector3) -> float:
@@ -178,10 +181,11 @@ func detach_closest_cell(from_world: Vector3) -> Dictionary:
     _removed_cells[_cell_key(best_cell)] = true
     _remaining_cells = maxi(0, _remaining_cells - 1)
 
-    # Mining is the only time the asteroid mesh changes. Rebuild one combined
-    # exterior mesh after removing the voxel; there are never 8,000 cube
-    # MeshInstances/MultiMesh instances being rendered or rotated.
+    # Mining is the only time the asteroid geometry changes. Rebuild both the
+    # one combined exterior mesh and the merged collision cuboids so physics
+    # matches the visible missing cell without creating thousands of shapes.
     _rebuild_surface()
+    _rebuild_collision()
 
     return {
         "position": best_world_position,
@@ -356,16 +360,108 @@ func _append_triangle(
 
 
 func _build_collision() -> void:
-    _collision_shape = CollisionShape3D.new()
+    _rebuild_collision()
 
-    # Collision stays deliberately coarse: one body-sized box rather than
-    # thousands of per-voxel collision shapes. Mining a one-cell notch does not
-    # justify rebuilding physics geometry every five seconds.
-    var shape := BoxShape3D.new()
-    shape.size = Vector3(
-        float(GRID_SIZE),
-        float(GRID_HEIGHT),
-        float(GRID_SIZE)
+
+func _rebuild_collision() -> void:
+    # The visual is voxel-based, but using one CollisionShape3D per occupied
+    # cell would mean as many as 8,000 physics shapes. Instead greedily merge
+    # adjacent occupied cells into larger axis-aligned cuboids. A pristine
+    # asteroid is exactly one box; mined notches add only the boxes needed to
+    # describe the remaining solid volume.
+    for collision_shape in _collision_shapes:
+        if collision_shape != null and is_instance_valid(collision_shape):
+            if collision_shape.get_parent() == self:
+                remove_child(collision_shape)
+            collision_shape.queue_free()
+
+    _collision_shapes.clear()
+    _collision_boxes.clear()
+
+    var visited: Dictionary = {}
+    var half := int(GRID_SIZE / 2)
+    var half_height := int(GRID_HEIGHT / 2)
+
+    for y in range(-half_height, half_height):
+        for z in range(-half, half):
+            for x in range(-half, half):
+                var start := Vector3i(x, y, z)
+                if not _collision_cell_available(start, visited):
+                    continue
+
+                var size_x := 1
+                while (
+                    x + size_x < half
+                    and _collision_cell_available(
+                        Vector3i(x + size_x, y, z),
+                        visited
+                    )
+                ):
+                    size_x += 1
+
+                var size_z := 1
+                while z + size_z < half:
+                    var z_clear := true
+                    for check_x in range(x, x + size_x):
+                        if not _collision_cell_available(
+                            Vector3i(check_x, y, z + size_z),
+                            visited
+                        ):
+                            z_clear = false
+                            break
+                    if not z_clear:
+                        break
+                    size_z += 1
+
+                var size_y := 1
+                while y + size_y < half_height:
+                    var y_clear := true
+                    for check_z in range(z, z + size_z):
+                        for check_x in range(x, x + size_x):
+                            if not _collision_cell_available(
+                                Vector3i(check_x, y + size_y, check_z),
+                                visited
+                            ):
+                                y_clear = false
+                                break
+                        if not y_clear:
+                            break
+                    if not y_clear:
+                        break
+                    size_y += 1
+
+                for mark_y in range(y, y + size_y):
+                    for mark_z in range(z, z + size_z):
+                        for mark_x in range(x, x + size_x):
+                            visited[_cell_key(
+                                Vector3i(mark_x, mark_y, mark_z)
+                            )] = true
+
+                var box := AABB(
+                    Vector3(float(x), float(y), float(z)) * CELL_SIZE,
+                    Vector3(
+                        float(size_x),
+                        float(size_y),
+                        float(size_z)
+                    ) * CELL_SIZE
+                )
+                _collision_boxes.append(box)
+
+                var box_shape := BoxShape3D.new()
+                box_shape.size = box.size
+
+                var collision_shape := CollisionShape3D.new()
+                collision_shape.shape = box_shape
+                collision_shape.position = box.position + box.size * 0.5
+                add_child(collision_shape)
+                _collision_shapes.append(collision_shape)
+
+
+func _collision_cell_available(
+    cell: Vector3i,
+    visited: Dictionary
+) -> bool:
+    return (
+        _is_occupied(cell)
+        and not visited.has(_cell_key(cell))
     )
-    _collision_shape.shape = shape
-    add_child(_collision_shape)
