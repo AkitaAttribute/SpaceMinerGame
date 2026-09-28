@@ -5,6 +5,27 @@ const INDEX_PATH := ROOT_DIR + "/index.json"
 
 var _models: Array[Dictionary] = []
 
+# Scene-transition handoff. Autoload state survives scene changes, allowing the
+# builder and flight simulation to reopen the same ship without duplicating the
+# model in memory.
+var requested_view := "selector"
+var requested_ship_id := ""
+
+
+func request_view(view_name: String, model_id := "") -> void:
+    requested_view = view_name
+    requested_ship_id = model_id
+
+
+func take_view_request() -> Dictionary:
+    var request := {
+        "view": requested_view,
+        "ship_id": requested_ship_id,
+    }
+    requested_view = "selector"
+    requested_ship_id = ""
+    return request
+
 
 func _ready() -> void:
     _ensure_storage()
