@@ -157,12 +157,44 @@ func _change_scene_deferred(path: String) -> void:
 
 
 func _notification(what: int) -> void:
-    if what == NOTIFICATION_APPLICATION_FOCUS_IN and AppSettings.theme_mode == "system" and ui_root != null:
-        _apply_theme()
-    elif what == NOTIFICATION_WM_CLOSE_REQUEST:
+    if (
+        what == NOTIFICATION_APPLICATION_FOCUS_OUT
+        or what == NOTIFICATION_APPLICATION_PAUSED
+    ):
+        if view_mode == "builder":
+            _save_current_ship_model()
+        _cancel_pending_thumbnail_capture()
+        return
+
+    if (
+        what == NOTIFICATION_APPLICATION_FOCUS_IN
+        or what == NOTIFICATION_APPLICATION_RESUMED
+    ):
+        if AppSettings.theme_mode == "system" and ui_root != null:
+            _apply_theme()
+        if view_mode == "builder":
+            call_deferred("_restore_builder_after_resume")
+        return
+
+    if what == NOTIFICATION_WM_CLOSE_REQUEST:
         if view_mode == "builder":
             _save_current_ship_model()
         get_tree().quit()
+
+
+func _restore_builder_after_resume() -> void:
+    if view_mode != "builder":
+        return
+
+    _set_builder_world_visible(true)
+    if camera != null:
+        camera.current = true
+    _rebuild_grid()
+    _refresh_ghost()
+    _refresh_selection_highlight()
+    _refresh_rotation_guide()
+    _apply_control_scale()
+    _refresh_controls_visibility()
 
 func _build_world() -> void:
     world_environment = WorldEnvironment.new()
@@ -407,6 +439,8 @@ func _control_button(text_value: String, position_value: Vector2, size_value: Ve
     button.position = position_value
     button.size = size_value
     button.custom_minimum_size = size_value
+    button.set_meta("base_position", position_value)
+    button.set_meta("base_size", size_value)
     button.modulate.a = 0.82
     return button
 
@@ -925,6 +959,9 @@ func _capture_current_ship_thumbnail(after_capture := Callable()) -> void:
     )
 
 func _finish_current_ship_thumbnail_capture() -> void:
+    if not thumbnail_capture_pending:
+        return
+
     var ship_id := thumbnail_capture_ship_id
     if not ship_id.is_empty():
         var image := get_viewport().get_texture().get_image()
@@ -957,11 +994,22 @@ func _finish_current_ship_thumbnail_capture() -> void:
     if callback.is_valid():
         callback.call()
 
+func _cancel_pending_thumbnail_capture() -> void:
+    if not thumbnail_capture_pending:
+        return
+
+    thumbnail_capture_pending = false
+    thumbnail_capture_ship_id = ""
+    thumbnail_after_capture = Callable()
+
+    if view_mode == "builder":
+        _set_builder_world_visible(true)
+
+
 func _mark_ship_changed() -> void:
     if view_mode != "builder" or current_ship_id.is_empty():
         return
     _save_current_ship_model()
-    _capture_current_ship_thumbnail()
 
 func _build_menu_overlay() -> void:
     menu_dim = ColorRect.new()
@@ -1619,18 +1667,33 @@ func _apply_control_scale() -> void:
     if dpad_root == null or vertical_controls_root == null:
         return
 
-    # Intentionally unbounded: the setting is a direct percentage and the
-    # controls menu does not impose a minimum or maximum.
+    # 100% is exactly the pre-scaling layout. Scale actual geometry rather than
+    # Control.scale so Android anchors and stretch transforms cannot collapse or
+    # move the controls off-screen.
     var scale_value := AppSettings.controls_scale_percent / 100.0
-    var control_scale := Vector2(scale_value, scale_value)
 
-    dpad_root.scale = control_scale
-    vertical_controls_root.scale = control_scale
+    dpad_root.scale = Vector2.ONE
+    vertical_controls_root.scale = Vector2.ONE
 
-    # Scale the original bottom-right offsets too, keeping the D-pad, bumpers,
-    # Z controls, button dimensions, and all gaps proportional to each other.
     dpad_root.position = Vector2(-390.0, -230.0) * scale_value
+    dpad_root.size = Vector2(190.0, 190.0) * scale_value
+
     vertical_controls_root.position = Vector2(-116.0, -198.0) * scale_value
+    vertical_controls_root.size = Vector2(84.0, 160.0) * scale_value
+
+    for root in [dpad_root, vertical_controls_root]:
+        for child in root.get_children():
+            if not (child is Control):
+                continue
+            var control := child as Control
+            if not control.has_meta("base_position") or not control.has_meta("base_size"):
+                continue
+
+            var base_position := control.get_meta("base_position") as Vector2
+            var base_size := control.get_meta("base_size") as Vector2
+            control.position = base_position * scale_value
+            control.size = base_size * scale_value
+            control.custom_minimum_size = base_size * scale_value
 
 
 func _begin_binding_capture(action: StringName, slot: int) -> void:
