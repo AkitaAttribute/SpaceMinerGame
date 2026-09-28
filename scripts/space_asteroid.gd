@@ -44,8 +44,9 @@ func configure(id_value: String, world_position: Vector3, seed_value: int) -> vo
     _cells.clear()
     _colors.clear()
 
-    var half := GRID_SIZE / 2
-    for y in range(-GRID_HEIGHT / 2, GRID_HEIGHT / 2):
+    var half := int(GRID_SIZE / 2)
+    var half_height := int(GRID_HEIGHT / 2)
+    for y in range(-half_height, half_height):
         for x in range(-half, half):
             for z in range(-half, half):
                 var cell := Vector3i(x, y, z)
@@ -126,14 +127,15 @@ func has_cells() -> bool:
 
 
 func _is_outer_cell(cell: Vector3i) -> bool:
-    var half := GRID_SIZE / 2
+    var half := int(GRID_SIZE / 2)
+    var half_height := int(GRID_HEIGHT / 2)
     return (
         cell.x == -half
         or cell.x == half - 1
         or cell.z == -half
         or cell.z == half - 1
-        or cell.y == -GRID_HEIGHT / 2
-        or cell.y == GRID_HEIGHT / 2 - 1
+        or cell.y == -half_height
+        or cell.y == half_height - 1
     )
 
 
