@@ -27,11 +27,11 @@ const ASTEROID_UPDATE_INTERVAL := 0.75
 const ASTEROID_SECTOR_SPAWN_CHANCE := 0.28
 const ASTEROID_HALF_DIAGONAL := 17.4
 const ASTEROID_SPAWN_SURFACE_GAP := 32.0
-const ASTEROID_LAUNCH_CENTER_CLEARANCE := 140.0
+const ASTEROID_LAUNCH_CENTER_CLEARANCE := 72.0
 const ASTEROID_MIN_CENTER_SEPARATION := 140.0
-const ASTEROID_FIRST_SPAWN_TRIGGER_DISTANCE := 24.0
 const ASTEROID_GENERATION_START_DISTANCE := 90.0
-const INITIAL_ASTEROID_DISTANCE := 160.0
+const INITIAL_ASTEROID_FORWARD_DISTANCE := 90.0
+const INITIAL_ASTEROID_SIDE_DISTANCE := 50.0
 
 const CAMERA_MOUSE_SENSITIVITY := 0.0026
 const CAMERA_TOUCH_SENSITIVITY := 0.0042
@@ -69,7 +69,6 @@ var heel_angle := 0.0
 var heel_velocity := 0.0
 var asteroid_update_time := 0.0
 var beam_time := 0.0
-var initial_asteroid_spawned := false
 
 var camera_position_smooth := Vector3.ZERO
 var camera_target_smooth := Vector3.ZERO
@@ -597,14 +596,21 @@ func _update_ship_motion(delta: float) -> void:
         steer = mobile_input.x
         throttle = mobile_input.y
     else:
-        throttle = (
-            Input.get_action_strength(&"builder_up")
-            - Input.get_action_strength(&"builder_down")
-        )
+        var forward_input := Input.get_action_strength(&"builder_up")
+        var reverse_input := Input.get_action_strength(&"builder_down")
         steer = (
             Input.get_action_strength(&"builder_right")
             - Input.get_action_strength(&"builder_left")
         )
+
+        if reverse_input > 0.0:
+            # S applies thrust opposite the ship's forward axis. At forward
+            # speed this behaves as braking; held longer it drives in reverse.
+            throttle = -reverse_input
+        else:
+            # W is not required for movement. A or D alone still requests
+            # forward propulsion while simultaneously asking for a turn.
+            throttle = maxf(forward_input, absf(steer))
 
     var forward := _ship_forward_world()
     var right := forward.cross(Vector3.UP).normalized()
@@ -812,30 +818,21 @@ func _resolve_camera_obstruction(
 
 
 func _spawn_initial_asteroids() -> void:
-    # Intentionally empty. Starting the simulation with no asteroid at all is
-    # the strongest guarantee that the player cannot spawn beside/inside one.
-    # The first known asteroid is introduced only after the ship has travelled
-    # away from its launch point.
-    initial_asteroid_spawned = false
+    var forward := _ship_forward_world()
+    var right := forward.cross(Vector3.UP).normalized()
+    var initial_position := (
+        launch_position
+        + forward * INITIAL_ASTEROID_FORWARD_DISTANCE
+        + right * INITIAL_ASTEROID_SIDE_DISTANCE
+    )
+
+    _spawn_asteroid("origin_a", initial_position, 1001)
 
 
 func _update_asteroids(delta: float) -> void:
     for asteroid in asteroids.values():
         if is_instance_valid(asteroid):
             (asteroid as SpaceAsteroid).update_spin(delta)
-
-    var travelled_from_launch := ship_body.global_position.distance_to(launch_position)
-    if (
-        not initial_asteroid_spawned
-        and travelled_from_launch >= ASTEROID_FIRST_SPAWN_TRIGGER_DISTANCE
-    ):
-        initial_asteroid_spawned = true
-        _spawn_asteroid(
-            "origin_a",
-            ship_body.global_position
-                + _ship_forward_world() * INITIAL_ASTEROID_DISTANCE,
-            1001
-        )
 
     asteroid_update_time += delta
     if asteroid_update_time >= ASTEROID_UPDATE_INTERVAL:
