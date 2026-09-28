@@ -30,7 +30,7 @@ var _collision_shape: CollisionShape3D
 
 func configure(id_value: String, world_position: Vector3, seed_value: int) -> void:
     asteroid_id = id_value
-    global_position = world_position
+    position = world_position
     _seed = seed_value
     _removed_cells.clear()
     _surface_cells.clear()
