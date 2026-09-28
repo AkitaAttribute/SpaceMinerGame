@@ -21,8 +21,8 @@ const HEEL_SPRING := 9.0
 const HEEL_DAMPING := 5.4
 const HEEL_STABILITY := 1.35
 
-const ASTEROID_KEEP_DISTANCE := 220.0
-const ASTEROID_UPDATE_INTERVAL := 0.75
+const ASTEROID_KEEP_DISTANCE := 500.0
+const ASTEROID_UPDATE_INTERVAL := 1.5
 const ASTEROID_HALF_DIAGONAL := 17.4
 const ASTEROID_SPAWN_SURFACE_GAP := 32.0
 const ASTEROID_LAUNCH_CENTER_CLEARANCE := 72.0
@@ -904,9 +904,18 @@ func _remove_distant_asteroids() -> void:
             remove_keys.append(str(key))
             continue
 
+        var distance := asteroid.global_position.distance_to(
+            ship_body.global_position
+        )
+
+        # Never despawn an asteroid while the player can see it. The previous
+        # 220-cell cutoff could repeatedly remove/recreate a distant asteroid
+        # near the edge of the active area, which looked like a flickering cube
+        # and caused expensive 20^3 surface-mesh rebuild spikes.
         if (
-            asteroid.global_position.distance_to(ship_body.global_position)
-            > ASTEROID_KEEP_DISTANCE
+            distance > ASTEROID_KEEP_DISTANCE
+            and camera != null
+            and camera.is_position_behind(asteroid.global_position)
         ):
             asteroid.queue_free()
             remove_keys.append(str(key))
