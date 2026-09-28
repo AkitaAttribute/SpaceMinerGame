@@ -27,7 +27,9 @@ const ASTEROID_UPDATE_INTERVAL := 0.75
 const ASTEROID_SECTOR_SPAWN_CHANCE := 0.28
 const ASTEROID_HALF_DIAGONAL := 17.4
 const ASTEROID_SPAWN_SURFACE_GAP := 32.0
-const INITIAL_ASTEROID_DISTANCE := 70.0
+const ASTEROID_LAUNCH_CENTER_CLEARANCE := 120.0
+const ASTEROID_MIN_CENTER_SEPARATION := 96.0
+const INITIAL_ASTEROID_DISTANCE := 160.0
 
 const CAMERA_MOUSE_SENSITIVITY := 0.0026
 const CAMERA_TOUCH_SENSITIVITY := 0.0042
@@ -55,6 +57,8 @@ var ship_cell_boxes: Array[Dictionary] = []
 
 var model_center := Vector3.ZERO
 var model_radius := 2.0
+var ship_forward_local := Vector3.FORWARD
+var launch_position := Vector3.ZERO
 
 var surge_speed := 0.0
 var sway_speed := 0.0
@@ -92,6 +96,7 @@ func _ready() -> void:
     _build_environment()
     _build_simulation_roots()
     _load_ship()
+    launch_position = ship_body.global_position
     _build_camera()
     _spawn_initial_asteroids()
     _build_ui()
@@ -149,6 +154,8 @@ func _load_ship() -> void:
     var bounds_min := Vector3(INF, INF, INF)
     var bounds_max := Vector3(-INF, -INF, -INF)
     var occupied_records: Array[Dictionary] = []
+    var thruster_forward_sum := Vector3.ZERO
+    var thruster_count := 0
 
     if parts_value is Array:
         for value in parts_value:
@@ -182,6 +189,12 @@ func _load_ship() -> void:
                 "occupied": occupied,
             })
 
+            if part_id == "thruster_t1" or part_id == "thruster_t2":
+                # Thruster nozzles exhaust toward local +Z, so propulsion /
+                # ship-forward is local -Z (Godot's Vector3.FORWARD).
+                thruster_forward_sum += basis * Vector3.FORWARD
+                thruster_count += 1
+
             for cell in occupied:
                 var center := _cell_world_center(cell)
                 bounds_min.x = minf(bounds_min.x, center.x - 0.5)
@@ -213,6 +226,16 @@ func _load_ship() -> void:
         1.5,
         maxf(collision_size.x, collision_size.z) * 0.5
     )
+
+    if thruster_count > 0:
+        var candidate_forward := thruster_forward_sum / float(thruster_count)
+        candidate_forward.y = 0.0
+        if candidate_forward.length_squared() > 0.01:
+            ship_forward_local = candidate_forward.normalized()
+        else:
+            ship_forward_local = Vector3.FORWARD
+    else:
+        ship_forward_local = Vector3.FORWARD
 
     for record in occupied_records:
         var center := (record["center"] as Vector3) - model_center
@@ -337,8 +360,8 @@ func _build_camera() -> void:
     camera.fov = 60.0
     add_child(camera)
 
-    var forward := ship_body.global_basis * Vector3.FORWARD
-    var distance := maxf(17.0, model_radius * 2.8 + 10.0)
+    var forward := _ship_forward_world()
+    var distance := maxf(28.0, model_radius * 4.2 + 18.0)
     camera_target_smooth = ship_body.global_position + forward * 2.2
     camera_position_smooth = _camera_orbit_position(
         camera_target_smooth,
@@ -571,17 +594,12 @@ func _update_ship_motion(delta: float) -> void:
         - Input.get_action_strength(&"builder_left")
     )
 
-    # Resolve the existing inertial velocity into the hull's current axes.
-    # We then apply surge and sway forces back into world velocity rather than
-    # rotating the velocity vector with the hull. That preserves drift/slip in
-    # a turn and lets the strong lateral water resistance remove it gradually.
-    var basis_before_turn := ship_body.global_basis
-    var local_velocity := basis_before_turn.inverse() * ship_body.velocity
-    sway_speed = local_velocity.x
-    surge_speed = -local_velocity.z
+    var forward := _ship_forward_world()
+    var right := forward.cross(Vector3.UP).normalized()
 
-    var forward := basis_before_turn * Vector3.FORWARD
-    var right := basis_before_turn * Vector3.RIGHT
+    # Resolve inertial velocity along the actual thrust-defined hull axes.
+    surge_speed = ship_body.velocity.dot(forward)
+    sway_speed = ship_body.velocity.dot(right)
 
     var surge_acceleration := (
         throttle * ENGINE_ACCELERATION
@@ -597,26 +615,21 @@ func _update_ship_motion(delta: float) -> void:
     ship_body.velocity += right * sway_acceleration * delta
     ship_body.velocity.y = 0.0
 
-    # Clamp only the fore/aft component; lateral slip remains free to decay.
-    local_velocity = basis_before_turn.inverse() * ship_body.velocity
-    local_velocity.z = clampf(
-        local_velocity.z,
-        -MAX_FORWARD_SPEED,
-        MAX_REVERSE_SPEED
+    surge_speed = ship_body.velocity.dot(forward)
+    sway_speed = ship_body.velocity.dot(right)
+    surge_speed = clampf(
+        surge_speed,
+        -MAX_REVERSE_SPEED,
+        MAX_FORWARD_SPEED
     )
-    ship_body.velocity = basis_before_turn * local_velocity
+    ship_body.velocity = forward * surge_speed + right * sway_speed
     ship_body.velocity.y = 0.0
-    sway_speed = local_velocity.x
-    surge_speed = -local_velocity.z
 
     var steering_speed := maxf(absf(surge_speed), 0.35)
     var direction_sign := signf(surge_speed)
     if absf(direction_sign) < 0.5:
         direction_sign = 1.0
 
-    # Rudder authority scales with speed squared, while yaw has its own damping.
-    # This is a compact game-scale version of the surge/sway/yaw coupling used
-    # in marine manoeuvring models.
     var yaw_acceleration := (
         -steer
         * direction_sign
@@ -644,15 +657,11 @@ func _update_ship_motion(delta: float) -> void:
         ship_body.velocity *= 0.78
         ship_body.velocity.y = 0.0
 
-    var local_after_collision := (
-        ship_body.global_basis.inverse() * ship_body.velocity
-    )
-    sway_speed = local_after_collision.x
-    surge_speed = -local_after_collision.z
+    forward = _ship_forward_world()
+    right = forward.cross(Vector3.UP).normalized()
+    sway_speed = ship_body.velocity.dot(right)
+    surge_speed = ship_body.velocity.dot(forward)
 
-    # For steady turning, lateral acceleration is approximately V * yaw-rate.
-    # Heel follows that acceleration through a damped restoring response rather
-    # than snapping directly to a cosmetic bank angle.
     var lateral_acceleration := -surge_speed * yaw_rate
     var target_heel := atan(
         lateral_acceleration / (9.81 * HEEL_STABILITY)
@@ -675,8 +684,8 @@ func _update_ship_motion(delta: float) -> void:
 
 
 func _update_camera(delta: float) -> void:
-    var forward := ship_body.global_basis * Vector3.FORWARD
-    var distance := maxf(17.0, model_radius * 2.8 + 10.0)
+    var forward := _ship_forward_world()
+    var distance := maxf(28.0, model_radius * 4.2 + 18.0)
 
     var desired_target := ship_body.global_position + forward * 2.2
     var desired_position := _camera_orbit_position(
@@ -704,6 +713,14 @@ func _update_camera(delta: float) -> void:
 
     camera.global_position = camera_position_smooth
     camera.look_at(camera_target_smooth, Vector3.UP)
+
+
+func _ship_forward_world() -> Vector3:
+    var forward := ship_body.global_basis * ship_forward_local
+    forward.y = 0.0
+    if forward.length_squared() < 0.001:
+        return Vector3.FORWARD
+    return forward.normalized()
 
 
 func _camera_orbit_position(
@@ -756,7 +773,7 @@ func _spawn_initial_asteroids() -> void:
     # without putting either the ship or third-person camera inside a 20^3 body.
     _spawn_asteroid(
         "origin_a",
-        Vector3(0.0, 0.0, -INITIAL_ASTEROID_DISTANCE),
+        launch_position + _ship_forward_world() * INITIAL_ASTEROID_DISTANCE,
         1001
     )
     _refresh_asteroid_sectors()
@@ -824,9 +841,12 @@ func _refresh_asteroid_sectors() -> void:
 
 
 func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
-    # Clearance is measured from the outside of the 20x20x20 asteroid, not
-    # merely from its center. This guarantees a large empty launch bubble even
-    # for the largest builder ships.
+    # Nothing may appear anywhere near the initial spawn, regardless of the
+    # current ship position or camera. This prevents a newly generated sector
+    # from ever placing a 20^3 asteroid over the launch area.
+    if world_position.distance_to(launch_position) < ASTEROID_LAUNCH_CENTER_CLEARANCE:
+        return false
+
     var ship_clearance := (
         ASTEROID_HALF_DIAGONAL
         + model_radius
@@ -849,7 +869,7 @@ func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
         var asteroid := value as SpaceAsteroid
         if (
             world_position.distance_to(asteroid.global_position)
-            < ASTEROID_SECTOR_SIZE * 0.52
+            < ASTEROID_MIN_CENTER_SEPARATION
         ):
             return false
 
