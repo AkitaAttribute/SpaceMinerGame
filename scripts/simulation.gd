@@ -25,7 +25,15 @@ const ASTEROID_SECTOR_SIZE := 120.0
 const ASTEROID_KEEP_DISTANCE := 210.0
 const ASTEROID_UPDATE_INTERVAL := 0.75
 const ASTEROID_SECTOR_SPAWN_CHANCE := 0.28
-const ASTEROID_SPAWN_CLEARANCE := 26.0
+const ASTEROID_HALF_DIAGONAL := 17.4
+const ASTEROID_SPAWN_SURFACE_GAP := 32.0
+const INITIAL_ASTEROID_DISTANCE := 70.0
+
+const CAMERA_MOUSE_SENSITIVITY := 0.0026
+const CAMERA_TOUCH_SENSITIVITY := 0.0042
+const CAMERA_MIN_PITCH := deg_to_rad(-8.0)
+const CAMERA_MAX_PITCH := deg_to_rad(68.0)
+const CAMERA_DEFAULT_PITCH := deg_to_rad(25.0)
 
 const TRACTOR_START_SPEED := 3.0
 const TRACTOR_ACCELERATION := 4.5
@@ -58,6 +66,8 @@ var beam_time := 0.0
 
 var camera_position_smooth := Vector3.ZERO
 var camera_target_smooth := Vector3.ZERO
+var camera_yaw_offset := 0.0
+var camera_pitch := CAMERA_DEFAULT_PITCH
 
 var ui_layer: CanvasLayer
 var gear_button: Button
@@ -85,6 +95,9 @@ func _ready() -> void:
     _build_camera()
     _spawn_initial_asteroids()
     _build_ui()
+
+    if not _is_mobile_platform() and "--simulation-smoke" not in OS.get_cmdline_user_args():
+        Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
     if "--simulation-smoke" in OS.get_cmdline_user_args():
         var timer := get_tree().create_timer(7.0)
@@ -326,12 +339,12 @@ func _build_camera() -> void:
 
     var forward := ship_body.global_basis * Vector3.FORWARD
     var distance := maxf(17.0, model_radius * 2.8 + 10.0)
-    camera_position_smooth = (
-        ship_body.global_position
-        - forward * distance
-        + Vector3.UP * (distance * 0.48)
-    )
     camera_target_smooth = ship_body.global_position + forward * 2.2
+    camera_position_smooth = _camera_orbit_position(
+        camera_target_smooth,
+        forward,
+        distance
+    )
     camera.global_position = camera_position_smooth
     camera.look_at(camera_target_smooth, Vector3.UP)
 
@@ -350,10 +363,10 @@ func _build_ui() -> void:
     if _is_mobile_platform():
         mobile_joystick = VirtualJoystick.new()
         mobile_joystick.name = "FlightJoystick"
-        mobile_joystick.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-        mobile_joystick.offset_left = 22.0
+        mobile_joystick.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+        mobile_joystick.offset_left = -242.0
         mobile_joystick.offset_top = -242.0
-        mobile_joystick.offset_right = 242.0
+        mobile_joystick.offset_right = -22.0
         mobile_joystick.offset_bottom = -22.0
         mobile_joystick.joystick_size = 164.0
         mobile_joystick.tip_size = 62.0
@@ -440,10 +453,42 @@ func _unhandled_input(event: InputEvent) -> void:
         else:
             _open_menu()
         get_viewport().set_input_as_handled()
+        return
+
+    if menu_open:
+        return
+
+    if not _is_mobile_platform() and event is InputEventMouseMotion:
+        var mouse_motion := event as InputEventMouseMotion
+        _orbit_camera_from_delta(
+            mouse_motion.relative,
+            CAMERA_MOUSE_SENSITIVITY
+        )
+        get_viewport().set_input_as_handled()
+        return
+
+    if _is_mobile_platform() and event is InputEventScreenDrag:
+        var touch_drag := event as InputEventScreenDrag
+        _orbit_camera_from_delta(
+            touch_drag.relative,
+            CAMERA_TOUCH_SENSITIVITY
+        )
+        get_viewport().set_input_as_handled()
+
+
+func _orbit_camera_from_delta(delta_pixels: Vector2, sensitivity: float) -> void:
+    camera_yaw_offset -= delta_pixels.x * sensitivity
+    camera_pitch = clampf(
+        camera_pitch - delta_pixels.y * sensitivity,
+        CAMERA_MIN_PITCH,
+        CAMERA_MAX_PITCH
+    )
 
 
 func _open_menu() -> void:
     menu_open = true
+    if not _is_mobile_platform():
+        Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
     menu_dim.visible = true
     menu_panel.visible = true
     gear_button.visible = false
@@ -474,6 +519,8 @@ func _close_menu() -> void:
     menu_dim.visible = false
     menu_panel.visible = false
     gear_button.visible = true
+    if not _is_mobile_platform():
+        Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
 func _flight_menu_action(action: String) -> void:
@@ -481,11 +528,25 @@ func _flight_menu_action(action: String) -> void:
         "resume":
             _close_menu()
         "builder":
+            if not _is_mobile_platform():
+                Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
             ShipStore.request_view("builder", ship_id)
             get_tree().change_scene_to_file("res://main.tscn")
         "selector":
+            if not _is_mobile_platform():
+                Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
             ShipStore.request_view("selector")
             get_tree().change_scene_to_file("res://main.tscn")
+
+
+func _notification(what: int) -> void:
+    if _is_mobile_platform():
+        return
+
+    if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+        Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+    elif what == NOTIFICATION_APPLICATION_FOCUS_IN and not menu_open:
+        Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
 func _physics_process(delta: float) -> void:
@@ -617,12 +678,12 @@ func _update_camera(delta: float) -> void:
     var forward := ship_body.global_basis * Vector3.FORWARD
     var distance := maxf(17.0, model_radius * 2.8 + 10.0)
 
-    var desired_position := (
-        ship_body.global_position
-        - forward * distance
-        + Vector3.UP * (distance * 0.48)
-    )
     var desired_target := ship_body.global_position + forward * 2.2
+    var desired_position := _camera_orbit_position(
+        desired_target,
+        forward,
+        distance
+    )
     desired_position = _resolve_camera_obstruction(
         desired_target,
         desired_position
@@ -643,6 +704,29 @@ func _update_camera(delta: float) -> void:
 
     camera.global_position = camera_position_smooth
     camera.look_at(camera_target_smooth, Vector3.UP)
+
+
+func _camera_orbit_position(
+    target: Vector3,
+    ship_forward: Vector3,
+    distance: float
+) -> Vector3:
+    var back := -ship_forward
+    back.y = 0.0
+    if back.length_squared() < 0.001:
+        back = Vector3.BACK
+    else:
+        back = back.normalized()
+
+    back = back.rotated(Vector3.UP, camera_yaw_offset)
+    var horizontal_distance := cos(camera_pitch) * distance
+    var vertical_distance := sin(camera_pitch) * distance
+
+    return (
+        target
+        + back * horizontal_distance
+        + Vector3.UP * vertical_distance
+    )
 
 
 func _resolve_camera_obstruction(
@@ -670,7 +754,11 @@ func _resolve_camera_obstruction(
 func _spawn_initial_asteroids() -> void:
     # One deliberately placed asteroid gives the player something to approach
     # without putting either the ship or third-person camera inside a 20^3 body.
-    _spawn_asteroid("origin_a", Vector3(0.0, 0.0, -28.0), 1001)
+    _spawn_asteroid(
+        "origin_a",
+        Vector3(0.0, 0.0, -INITIAL_ASTEROID_DISTANCE),
+        1001
+    )
     _refresh_asteroid_sectors()
 
 
@@ -736,17 +824,33 @@ func _refresh_asteroid_sectors() -> void:
 
 
 func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
-    if world_position.distance_to(ship_body.global_position) < ASTEROID_SPAWN_CLEARANCE:
+    # Clearance is measured from the outside of the 20x20x20 asteroid, not
+    # merely from its center. This guarantees a large empty launch bubble even
+    # for the largest builder ships.
+    var ship_clearance := (
+        ASTEROID_HALF_DIAGONAL
+        + model_radius
+        + ASTEROID_SPAWN_SURFACE_GAP
+    )
+    if world_position.distance_to(ship_body.global_position) < ship_clearance:
         return false
 
-    if camera != null and world_position.distance_to(camera.global_position) < ASTEROID_SPAWN_CLEARANCE:
-        return false
+    if camera != null:
+        var camera_clearance := (
+            ASTEROID_HALF_DIAGONAL
+            + ASTEROID_SPAWN_SURFACE_GAP
+        )
+        if world_position.distance_to(camera.global_position) < camera_clearance:
+            return false
 
     for value in asteroids.values():
         if value == null or not is_instance_valid(value):
             continue
         var asteroid := value as SpaceAsteroid
-        if world_position.distance_to(asteroid.global_position) < ASTEROID_SECTOR_SIZE * 0.52:
+        if (
+            world_position.distance_to(asteroid.global_position)
+            < ASTEROID_SECTOR_SIZE * 0.52
+        ):
             return false
 
     return true
