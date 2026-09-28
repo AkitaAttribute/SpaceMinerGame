@@ -1,6 +1,6 @@
 extends Node3D
 
-const LASER_RANGE := 10.0
+const LASER_RANGE := 40.0
 const LASER_MINING_SECONDS := 5.0
 const LASER_TRACK_SPEED := deg_to_rad(52.0)
 const LASER_ALIGNMENT_DOT := 0.985
@@ -29,8 +29,9 @@ const ASTEROID_HALF_DIAGONAL := 17.4
 const ASTEROID_SPAWN_SURFACE_GAP := 32.0
 const ASTEROID_LAUNCH_CENTER_CLEARANCE := 140.0
 const ASTEROID_MIN_CENTER_SEPARATION := 140.0
+const ASTEROID_FIRST_SPAWN_TRIGGER_DISTANCE := 24.0
 const ASTEROID_GENERATION_START_DISTANCE := 90.0
-const INITIAL_ASTEROID_DISTANCE := 220.0
+const INITIAL_ASTEROID_DISTANCE := 160.0
 
 const CAMERA_MOUSE_SENSITIVITY := 0.0026
 const CAMERA_TOUCH_SENSITIVITY := 0.0042
@@ -68,6 +69,7 @@ var heel_angle := 0.0
 var heel_velocity := 0.0
 var asteroid_update_time := 0.0
 var beam_time := 0.0
+var initial_asteroid_spawned := false
 
 var camera_position_smooth := Vector3.ZERO
 var camera_target_smooth := Vector3.ZERO
@@ -810,19 +812,30 @@ func _resolve_camera_obstruction(
 
 
 func _spawn_initial_asteroids() -> void:
-    # Launch with exactly one known asteroid, deliberately far away. Procedural
-    # sectors are not considered until the ship has travelled away from spawn.
-    _spawn_asteroid(
-        "origin_a",
-        launch_position + _ship_forward_world() * INITIAL_ASTEROID_DISTANCE,
-        1001
-    )
+    # Intentionally empty. Starting the simulation with no asteroid at all is
+    # the strongest guarantee that the player cannot spawn beside/inside one.
+    # The first known asteroid is introduced only after the ship has travelled
+    # away from its launch point.
+    initial_asteroid_spawned = false
 
 
 func _update_asteroids(delta: float) -> void:
     for asteroid in asteroids.values():
         if is_instance_valid(asteroid):
             (asteroid as SpaceAsteroid).update_spin(delta)
+
+    var travelled_from_launch := ship_body.global_position.distance_to(launch_position)
+    if (
+        not initial_asteroid_spawned
+        and travelled_from_launch >= ASTEROID_FIRST_SPAWN_TRIGGER_DISTANCE
+    ):
+        initial_asteroid_spawned = true
+        _spawn_asteroid(
+            "origin_a",
+            ship_body.global_position
+                + _ship_forward_world() * INITIAL_ASTEROID_DISTANCE,
+            1001
+        )
 
     asteroid_update_time += delta
     if asteroid_update_time >= ASTEROID_UPDATE_INTERVAL:
@@ -831,6 +844,8 @@ func _update_asteroids(delta: float) -> void:
 
 
 func _refresh_asteroid_sectors() -> void:
+    _purge_asteroids_from_launch_zone()
+
     if (
         ship_body.global_position.distance_to(launch_position)
         < ASTEROID_GENERATION_START_DISTANCE
@@ -883,6 +898,25 @@ func _refresh_asteroid_sectors() -> void:
         var asteroid := asteroids.get(key, null) as SpaceAsteroid
         if asteroid != null and is_instance_valid(asteroid):
             asteroid.queue_free()
+        asteroids.erase(key)
+
+
+func _purge_asteroids_from_launch_zone() -> void:
+    var remove_keys: Array[String] = []
+    for key in asteroids:
+        var asteroid := asteroids.get(key, null) as SpaceAsteroid
+        if asteroid == null or not is_instance_valid(asteroid):
+            remove_keys.append(str(key))
+            continue
+
+        if (
+            asteroid.global_position.distance_to(launch_position)
+            < ASTEROID_LAUNCH_CENTER_CLEARANCE
+        ):
+            asteroid.queue_free()
+            remove_keys.append(str(key))
+
+    for key in remove_keys:
         asteroids.erase(key)
 
 
