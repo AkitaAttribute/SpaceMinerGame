@@ -1598,6 +1598,22 @@ func _show_controls_menu() -> void:
         _commit_control_scale_input(scale_input)
     )
 
+    var invert_horizontal := CheckButton.new()
+    invert_horizontal.text = "Invert horizontal camera movement"
+    invert_horizontal.button_pressed = AppSettings.invert_camera_horizontal
+    invert_horizontal.toggled.connect(func(value: bool):
+        AppSettings.set_invert_camera_horizontal(value)
+    )
+    menu_content.add_child(invert_horizontal)
+
+    var invert_vertical := CheckButton.new()
+    invert_vertical.text = "Invert vertical camera movement"
+    invert_vertical.button_pressed = AppSettings.invert_camera_vertical
+    invert_vertical.toggled.connect(func(value: bool):
+        AppSettings.set_invert_camera_vertical(value)
+    )
+    menu_content.add_child(invert_vertical)
+
     var scroll := ScrollContainer.new()
     scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
     scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
