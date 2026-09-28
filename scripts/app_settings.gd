@@ -3,6 +3,7 @@ extends Node
 signal theme_changed
 signal highlight_color_changed
 signal controls_visibility_changed
+signal controls_scale_changed
 signal bindings_changed
 
 const CONFIG_PATH := "user://space_miner_settings.cfg"
@@ -40,6 +41,7 @@ const ACTION_LABELS := {
 var theme_mode := "system"
 var highlight_color := Color("#ffd83d")
 var show_controls_on_desktop := false
+var controls_scale_percent := 100.0
 
 func _ready() -> void:
     _ensure_default_actions()
@@ -101,6 +103,7 @@ func _load_settings() -> void:
         highlight_color = stored_highlight
 
     show_controls_on_desktop = bool(config.get_value("controls", "show_on_desktop", false))
+    controls_scale_percent = float(config.get_value("controls", "scale_percent", 100.0))
 
     for action in ACTION_ORDER:
         var section := "binding/%s" % String(action)
@@ -120,6 +123,7 @@ func save_settings() -> void:
     config.set_value("display", "theme_mode", theme_mode)
     config.set_value("display", "highlight_color", highlight_color)
     config.set_value("controls", "show_on_desktop", show_controls_on_desktop)
+    config.set_value("controls", "scale_percent", controls_scale_percent)
 
     for action in ACTION_ORDER:
         var codes: Array[int] = []
@@ -156,6 +160,12 @@ func set_show_controls_on_desktop(value: bool) -> void:
     show_controls_on_desktop = value
     save_settings()
     controls_visibility_changed.emit()
+
+func set_controls_scale_percent(value: float) -> void:
+    controls_scale_percent = value
+    save_settings()
+    controls_scale_changed.emit()
+
 
 func should_show_touch_controls() -> bool:
     return OS.has_feature("mobile") or show_controls_on_desktop
