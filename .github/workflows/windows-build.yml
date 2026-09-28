@@ -121,7 +121,7 @@ jobs:
       - name: Export Android debug APK
         shell: bash
         env:
-          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ runner.home }}/.android/debug.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /home/runner/.android/debug.keystore
           GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
           GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
