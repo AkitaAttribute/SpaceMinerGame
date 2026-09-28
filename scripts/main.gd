@@ -378,14 +378,15 @@ func _rebuild_part_cards() -> void:
 
 func _build_touch_controls() -> void:
     controls_root = Control.new()
+    controls_root.name = "OnScreenControls"
     controls_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
     controls_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    controls_root.z_index = 10
     ui_root.add_child(controls_root)
 
     dpad_root = Control.new()
+    dpad_root.name = "DPad"
     dpad_root.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-    dpad_root.position = Vector2(-390.0, -230.0)
-    dpad_root.size = Vector2(190.0, 190.0)
     dpad_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
     controls_root.add_child(dpad_root)
 
@@ -418,9 +419,8 @@ func _build_touch_controls() -> void:
     dpad_root.add_child(next_bumper)
 
     vertical_controls_root = Control.new()
+    vertical_controls_root.name = "ZAxisControls"
     vertical_controls_root.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-    vertical_controls_root.position = Vector2(-116.0, -198.0)
-    vertical_controls_root.size = Vector2(84.0, 160.0)
     vertical_controls_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
     controls_root.add_child(vertical_controls_root)
 
@@ -1053,11 +1053,22 @@ func _apply_theme() -> void:
 func _refresh_controls_visibility() -> void:
     if controls_root == null:
         return
+
+    var is_mobile := (
+        OS.has_feature("android")
+        or OS.has_feature("ios")
+        or OS.has_feature("mobile")
+    )
     controls_root.visible = (
         view_mode == "builder"
-        and AppSettings.should_show_touch_controls()
+        and (is_mobile or AppSettings.show_controls_on_desktop)
         and not menu_open
     )
+
+    if dpad_root != null:
+        dpad_root.visible = controls_root.visible
+
+    _apply_control_scale()
     _refresh_bumper_visibility()
     _refresh_vertical_controls_visibility()
 
@@ -1066,7 +1077,7 @@ func _refresh_vertical_controls_visibility() -> void:
         return
     # The parts drawer is an editing state, not a grid-navigation state.
     # Vertical navigation disappears completely until the drawer is closed.
-    vertical_controls_root.visible = not parts_open
+    vertical_controls_root.visible = controls_root.visible and not parts_open
 
 func _refresh_bumper_visibility() -> void:
     if previous_bumper == null:
@@ -1667,19 +1678,22 @@ func _apply_control_scale() -> void:
     if dpad_root == null or vertical_controls_root == null:
         return
 
-    # 100% is exactly the pre-scaling layout. Scale actual geometry rather than
-    # Control.scale so Android anchors and stretch transforms cannot collapse or
-    # move the controls off-screen.
+    # 100% reproduces the original Android layout exactly. Because these roots
+    # are bottom-right anchored, use offsets rather than Control.position/scale;
+    # this remains stable across Android orientation/surface recreation.
     var scale_value := AppSettings.controls_scale_percent / 100.0
 
     dpad_root.scale = Vector2.ONE
+    dpad_root.offset_left = -390.0 * scale_value
+    dpad_root.offset_top = -230.0 * scale_value
+    dpad_root.offset_right = -200.0 * scale_value
+    dpad_root.offset_bottom = -40.0 * scale_value
+
     vertical_controls_root.scale = Vector2.ONE
-
-    dpad_root.position = Vector2(-390.0, -230.0) * scale_value
-    dpad_root.size = Vector2(190.0, 190.0) * scale_value
-
-    vertical_controls_root.position = Vector2(-116.0, -198.0) * scale_value
-    vertical_controls_root.size = Vector2(84.0, 160.0) * scale_value
+    vertical_controls_root.offset_left = -116.0 * scale_value
+    vertical_controls_root.offset_top = -198.0 * scale_value
+    vertical_controls_root.offset_right = -32.0 * scale_value
+    vertical_controls_root.offset_bottom = -38.0 * scale_value
 
     for root in [dpad_root, vertical_controls_root]:
         for child in root.get_children():
