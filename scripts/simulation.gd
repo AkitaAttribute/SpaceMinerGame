@@ -82,6 +82,10 @@ func _ready() -> void:
     _build_camera()
     _build_ui()
 
+    if "--simulation-smoke" in OS.get_cmdline_user_args():
+        var timer := get_tree().create_timer(7.0)
+        timer.timeout.connect(get_tree().quit, CONNECT_ONE_SHOT)
+
 
 func _build_environment() -> void:
     var world := WorldEnvironment.new()
