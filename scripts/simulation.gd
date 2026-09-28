@@ -1042,8 +1042,8 @@ func _update_mining_lasers(delta: float) -> void:
             laser["chunk"] = null
 
         var target = laser.get("target", null)
-        if not _laser_target_in_range(target, pivot.global_position):
-            target = _choose_laser_target(pivot.global_position)
+        if not _laser_target_in_range(target, laser):
+            target = _choose_laser_target(laser)
             laser["target"] = target
             laser["fire_time"] = 0.0
 
@@ -1098,32 +1098,51 @@ func _update_mining_lasers(delta: float) -> void:
         mining_lasers[laser_index] = laser
 
 
-func _laser_target_in_range(target, from_world: Vector3) -> bool:
+func _laser_target_in_range(target, laser: Dictionary) -> bool:
     if target == null or not is_instance_valid(target):
         return false
+
     var asteroid := target as SpaceAsteroid
     if not asteroid.has_cells():
         return false
-    return asteroid.distance_to_surface(from_world) <= LASER_RANGE
+
+    return _laser_cell_hitbox_distance(laser, asteroid) <= LASER_RANGE
 
 
-func _choose_laser_target(from_world: Vector3):
+func _choose_laser_target(laser: Dictionary):
     var best = null
     var best_distance := INF
 
     for value in asteroids.values():
         if value == null or not is_instance_valid(value):
             continue
+
         var asteroid := value as SpaceAsteroid
         if not asteroid.has_cells():
             continue
 
-        var distance := asteroid.distance_to_surface(from_world)
+        var distance := _laser_cell_hitbox_distance(laser, asteroid)
         if distance <= LASER_RANGE and distance < best_distance:
             best_distance = distance
             best = asteroid
 
     return best
+
+
+func _laser_cell_hitbox_distance(
+    laser: Dictionary,
+    asteroid: SpaceAsteroid
+) -> float:
+    var anchor := laser.get("anchor_cell", Vector3i.ZERO) as Vector3i
+    var cell_local_center := _cell_world_center(anchor) - model_center
+    var cell_world_center := ship_visual_root.to_global(cell_local_center)
+    var cell_world_basis := ship_visual_root.global_basis.orthonormalized()
+
+    return asteroid.distance_from_world_cell_to_hitbox(
+        cell_world_center,
+        cell_world_basis,
+        0.5
+    )
 
 
 func _track_laser_pivot(
