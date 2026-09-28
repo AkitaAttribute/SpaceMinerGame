@@ -15,7 +15,7 @@ const RUDDER_GAIN := 0.032
 const YAW_DAMPING := 1.7
 const MAX_YAW_RATE := deg_to_rad(58.0)
 const COLLISION_RECOVERY_DURATION := 1.35
-const COLLISION_RECOVERY_CLEARANCE := 10.0
+const COLLISION_RECOVERY_CLEARANCE := 5.0
 const COLLISION_RECOVERY_TURN := PI * 0.5
 
 const MAX_HEEL := deg_to_rad(11.0)
@@ -79,6 +79,7 @@ var collision_recovery_normal := Vector3.ZERO
 var collision_recovery_target_position := Vector3.ZERO
 var collision_recovery_safe_radius := 0.0
 var collision_recovery_asteroid: SpaceAsteroid
+var collision_recovery_saved_velocity := Vector3.ZERO
 var asteroid_update_time := 0.0
 var asteroid_spawn_sequence := 0
 var beam_time := 0.0
@@ -733,6 +734,7 @@ func _update_ship_motion(delta: float) -> void:
     yaw_rate = clampf(yaw_rate, -MAX_YAW_RATE, MAX_YAW_RATE)
     ship_body.rotation.y += yaw_rate * delta
 
+    var pre_collision_velocity := ship_body.velocity
     var collided := ship_body.move_and_slide()
     ship_body.global_position.y = 0.0
     ship_body.velocity.y = 0.0
@@ -757,7 +759,8 @@ func _update_ship_motion(delta: float) -> void:
         if valid_normals > 0 and away_normal.length_squared() > 0.001:
             _begin_collision_recovery(
                 away_normal.normalized(),
-                hit_asteroid
+                hit_asteroid,
+                pre_collision_velocity
             )
 
     forward = _ship_forward_world()
@@ -788,16 +791,19 @@ func _update_ship_motion(delta: float) -> void:
 
 func _begin_collision_recovery(
     away_normal: Vector3,
-    asteroid: SpaceAsteroid
+    asteroid: SpaceAsteroid,
+    preserved_velocity: Vector3
 ) -> void:
     collision_recovery_active = true
     collision_recovery_elapsed = 0.0
     collision_recovery_normal = away_normal
     collision_recovery_asteroid = asteroid
+    collision_recovery_saved_velocity = preserved_velocity
+    collision_recovery_saved_velocity.y = 0.0
 
-    # A crash now kills all ship momentum immediately. Recovery movement is a
-    # positional separation only; normal thrust/boat physics stay disabled
-    # until the ship is completely outside the 10-cell safety radius.
+    # Pause momentum during recovery. The pre-impact movement vector is stored
+    # intact and restored only after the rotation and five-cell clearance are
+    # both complete.
     ship_body.velocity = Vector3.ZERO
     surge_speed = 0.0
     sway_speed = 0.0
@@ -827,7 +833,7 @@ func _begin_collision_recovery(
         # Use a conservative radius around the full 20x20x20 asteroid. The
         # shortest safe escape is directly outward from its center. Including
         # the ship radius means the entire ship, not just its origin, clears
-        # the asteroid by at least ten builder cells in every direction.
+        # the asteroid by at least five builder cells in every direction.
         var asteroid_center := asteroid.global_position
         var radial := ship_body.global_position - asteroid_center
         radial.y = 0.0
@@ -849,7 +855,7 @@ func _begin_collision_recovery(
         )
         collision_recovery_target_position.y = 0.0
     else:
-        # Fallback when the collider is unavailable: still separate ten cells
+        # Fallback when the collider is unavailable: still separate five cells
         # along the contact normal.
         collision_recovery_safe_radius = 0.0
         collision_recovery_target_position = (
@@ -862,7 +868,7 @@ func _begin_collision_recovery(
 func _update_collision_recovery(delta: float) -> void:
     # No normal input, acceleration, or retained momentum is allowed during
     # recovery. In particular, nothing may push the ship back toward the
-    # asteroid before the full ten-cell clearance has been reached.
+    # asteroid before the full five-cell clearance has been reached.
     ship_body.velocity = Vector3.ZERO
     surge_speed = 0.0
     sway_speed = 0.0
@@ -931,7 +937,9 @@ func _update_collision_recovery(delta: float) -> void:
 
     if turn_progress >= 1.0 and position_clear:
         ship_body.rotation.y = collision_recovery_target_yaw
-        ship_body.velocity = Vector3.ZERO
+        ship_body.velocity = collision_recovery_saved_velocity
+        ship_body.velocity.y = 0.0
+        collision_recovery_saved_velocity = Vector3.ZERO
         collision_recovery_active = false
         collision_recovery_elapsed = 0.0
         collision_recovery_safe_radius = 0.0
