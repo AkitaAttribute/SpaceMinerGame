@@ -67,7 +67,6 @@ var menu_content: VBoxContainer
 var menu_open := false
 
 var mobile_joystick: VirtualJoystick
-var mobile_steering := Vector2.ZERO
 
 
 func _ready() -> void:
@@ -352,11 +351,42 @@ func _build_ui() -> void:
         mobile_joystick = VirtualJoystick.new()
         mobile_joystick.name = "FlightJoystick"
         mobile_joystick.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-        mobile_joystick.offset_left = 24.0
-        mobile_joystick.offset_top = -244.0
-        mobile_joystick.offset_right = 244.0
-        mobile_joystick.offset_bottom = -24.0
-        mobile_joystick.vector_changed.connect(_on_mobile_joystick_changed)
+        mobile_joystick.offset_left = 22.0
+        mobile_joystick.offset_top = -242.0
+        mobile_joystick.offset_right = 242.0
+        mobile_joystick.offset_bottom = -22.0
+        mobile_joystick.joystick_size = 164.0
+        mobile_joystick.tip_size = 62.0
+        mobile_joystick.deadzone_ratio = 0.10
+        mobile_joystick.joystick_mode = VirtualJoystick.JOYSTICK_FIXED
+        mobile_joystick.visibility_mode = VirtualJoystick.VISIBILITY_ALWAYS
+        mobile_joystick.action_up = &"builder_up"
+        mobile_joystick.action_down = &"builder_down"
+        mobile_joystick.action_left = &"builder_left"
+        mobile_joystick.action_right = &"builder_right"
+
+        var joystick_style := StyleBoxFlat.new()
+        joystick_style.bg_color = Color(0.72, 0.78, 0.90, 0.11)
+        joystick_style.border_color = Color(0.84, 0.89, 1.0, 0.28)
+        joystick_style.set_border_width_all(2)
+        joystick_style.set_corner_radius_all(999)
+
+        var joystick_pressed := joystick_style.duplicate() as StyleBoxFlat
+        joystick_pressed.bg_color = Color(0.72, 0.78, 0.90, 0.16)
+
+        var tip_style := StyleBoxFlat.new()
+        tip_style.bg_color = Color(0.84, 0.89, 1.0, 0.24)
+        tip_style.border_color = Color(0.90, 0.94, 1.0, 0.40)
+        tip_style.set_border_width_all(2)
+        tip_style.set_corner_radius_all(999)
+
+        var tip_pressed := tip_style.duplicate() as StyleBoxFlat
+        tip_pressed.bg_color = Color(0.84, 0.89, 1.0, 0.32)
+
+        mobile_joystick.add_theme_stylebox_override("normal_joystick", joystick_style)
+        mobile_joystick.add_theme_stylebox_override("pressed_joystick", joystick_pressed)
+        mobile_joystick.add_theme_stylebox_override("normal_tip", tip_style)
+        mobile_joystick.add_theme_stylebox_override("pressed_tip", tip_pressed)
         root.add_child(mobile_joystick)
 
     gear_button = Button.new()
@@ -403,10 +433,6 @@ func _is_mobile_platform() -> bool:
     )
 
 
-func _on_mobile_joystick_changed(value: Vector2) -> void:
-    mobile_steering = value
-
-
 func _unhandled_input(event: InputEvent) -> void:
     if event.is_action_pressed(&"menu_back"):
         if menu_open:
@@ -418,9 +444,6 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _open_menu() -> void:
     menu_open = true
-    mobile_steering = Vector2.ZERO
-    if mobile_joystick != null:
-        mobile_joystick.reset()
     menu_dim.visible = true
     menu_panel.visible = true
     gear_button.visible = false
@@ -486,10 +509,6 @@ func _update_ship_motion(delta: float) -> void:
         Input.get_action_strength(&"builder_right")
         - Input.get_action_strength(&"builder_left")
     )
-
-    if _is_mobile_platform():
-        throttle = clampf(throttle - mobile_steering.y, -1.0, 1.0)
-        steer = clampf(steer + mobile_steering.x, -1.0, 1.0)
 
     # Resolve the existing inertial velocity into the hull's current axes.
     # We then apply surge and sway forces back into world velocity rather than
