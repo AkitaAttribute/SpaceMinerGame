@@ -42,6 +42,8 @@ var theme_mode := "system"
 var highlight_color := Color("#ffd83d")
 var show_controls_on_desktop := false
 var controls_scale_percent := 100.0
+var invert_camera_horizontal := false
+var invert_camera_vertical := true
 
 func _ready() -> void:
     _ensure_default_actions()
@@ -104,6 +106,8 @@ func _load_settings() -> void:
 
     show_controls_on_desktop = bool(config.get_value("controls", "show_on_desktop", false))
     controls_scale_percent = float(config.get_value("controls", "scale_percent", 100.0))
+    invert_camera_horizontal = bool(config.get_value("controls", "invert_camera_horizontal", false))
+    invert_camera_vertical = bool(config.get_value("controls", "invert_camera_vertical", true))
 
     for action in ACTION_ORDER:
         var section := "binding/%s" % String(action)
@@ -124,6 +128,8 @@ func save_settings() -> void:
     config.set_value("display", "highlight_color", highlight_color)
     config.set_value("controls", "show_on_desktop", show_controls_on_desktop)
     config.set_value("controls", "scale_percent", controls_scale_percent)
+    config.set_value("controls", "invert_camera_horizontal", invert_camera_horizontal)
+    config.set_value("controls", "invert_camera_vertical", invert_camera_vertical)
 
     for action in ACTION_ORDER:
         var codes: Array[int] = []
@@ -165,6 +171,16 @@ func set_controls_scale_percent(value: float) -> void:
     controls_scale_percent = value
     save_settings()
     controls_scale_changed.emit()
+
+
+func set_invert_camera_horizontal(value: bool) -> void:
+    invert_camera_horizontal = value
+    save_settings()
+
+
+func set_invert_camera_vertical(value: bool) -> void:
+    invert_camera_vertical = value
+    save_settings()
 
 
 func should_show_touch_controls() -> bool:
