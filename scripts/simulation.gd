@@ -21,17 +21,18 @@ const HEEL_SPRING := 9.0
 const HEEL_DAMPING := 5.4
 const HEEL_STABILITY := 1.35
 
-const ASTEROID_SECTOR_SIZE := 120.0
-const ASTEROID_KEEP_DISTANCE := 210.0
+const ASTEROID_KEEP_DISTANCE := 220.0
 const ASTEROID_UPDATE_INTERVAL := 0.75
-const ASTEROID_SECTOR_SPAWN_CHANCE := 0.28
 const ASTEROID_HALF_DIAGONAL := 17.4
 const ASTEROID_SPAWN_SURFACE_GAP := 32.0
 const ASTEROID_LAUNCH_CENTER_CLEARANCE := 72.0
-const ASTEROID_MIN_CENTER_SEPARATION := 140.0
-const ASTEROID_GENERATION_START_DISTANCE := 90.0
-const INITIAL_ASTEROID_FORWARD_DISTANCE := 80.0
-const INITIAL_ASTEROID_SIDE_DISTANCE := 20.0
+const ASTEROID_MIN_CENTER_SEPARATION := 120.0
+const ASTEROID_TARGET_COUNT := 2
+const ASTEROID_SPAWN_MIN_RADIUS := 105.0
+const ASTEROID_SPAWN_MAX_RADIUS := 180.0
+const ASTEROID_SPAWN_ATTEMPTS := 24
+const INITIAL_ASTEROID_FORWARD_DISTANCE := 95.0
+const INITIAL_ASTEROID_SIDE_DISTANCE := 28.0
 
 const CAMERA_MOUSE_SENSITIVITY := 0.0026
 const CAMERA_TOUCH_SENSITIVITY := 0.0042
@@ -68,6 +69,7 @@ var yaw_rate := 0.0
 var heel_angle := 0.0
 var heel_velocity := 0.0
 var asteroid_update_time := 0.0
+var asteroid_spawn_sequence := 0
 var beam_time := 0.0
 
 var camera_position_smooth := Vector3.ZERO
@@ -866,8 +868,6 @@ func _resolve_camera_obstruction(
 
 
 func _spawn_initial_asteroids() -> void:
-    # Spawn exactly one starter asteroid immediately, well clear of the ship
-    # but close enough to be visible from the opening camera.
     var forward := _ship_forward_world()
     var right := forward.cross(Vector3.UP).normalized()
     var initial_position := (
@@ -875,7 +875,12 @@ func _spawn_initial_asteroids() -> void:
         + forward * INITIAL_ASTEROID_FORWARD_DISTANCE
         + right * INITIAL_ASTEROID_SIDE_DISTANCE
     )
-    _spawn_asteroid("origin_a", initial_position, 1001)
+
+    # This position is deliberately constructed outside every launch/camera
+    # exclusion distance. Spawn it immediately, then maintain only one
+    # additional nearby asteroid.
+    _spawn_asteroid("starter", initial_position, 1001)
+    _maintain_asteroid_population()
 
 
 func _update_asteroids(delta: float) -> void:
@@ -886,70 +891,75 @@ func _update_asteroids(delta: float) -> void:
     asteroid_update_time += delta
     if asteroid_update_time >= ASTEROID_UPDATE_INTERVAL:
         asteroid_update_time = 0.0
-        _refresh_asteroid_sectors()
+        _remove_distant_asteroids()
+        _maintain_asteroid_population()
 
 
-func _refresh_asteroid_sectors() -> void:
-    if (
-        ship_body.global_position.distance_to(launch_position)
-        < ASTEROID_GENERATION_START_DISTANCE
-    ):
-        return
-
-    var current_x := int(floor(ship_body.global_position.x / ASTEROID_SECTOR_SIZE))
-    var current_z := int(floor(ship_body.global_position.z / ASTEROID_SECTOR_SIZE))
-
-    for sx in range(current_x - 1, current_x + 2):
-        for sz in range(current_z - 1, current_z + 2):
-            if sx == 0 and sz == 0:
-                continue
-
-            var key := "%d:%d" % [sx, sz]
-            if asteroids.has(key):
-                continue
-
-            var seed_value: int = int(abs(hash(Vector2i(sx, sz))))
-            var rng := RandomNumberGenerator.new()
-            rng.seed = seed_value
-
-            # Large 20x20x20 bodies should feel isolated rather than forming a
-            # wall of asteroids. The deterministic roll keeps sector contents
-            # stable as sectors unload/reload.
-            if rng.randf() > ASTEROID_SECTOR_SPAWN_CHANCE:
-                continue
-
-            var position := Vector3(
-                float(sx) * ASTEROID_SECTOR_SIZE + rng.randf_range(-24.0, 24.0),
-                0.0,
-                float(sz) * ASTEROID_SECTOR_SIZE + rng.randf_range(-24.0, 24.0)
-            )
-            if not _asteroid_spawn_is_clear(position):
-                continue
-
-            _spawn_asteroid(key, position, seed_value)
-
+func _remove_distant_asteroids() -> void:
     var remove_keys: Array[String] = []
+
     for key in asteroids:
-        var asteroid := asteroids[key] as SpaceAsteroid
-        if not is_instance_valid(asteroid):
+        var asteroid := asteroids.get(key, null) as SpaceAsteroid
+        if asteroid == null or not is_instance_valid(asteroid):
             remove_keys.append(str(key))
             continue
 
-        if asteroid.global_position.distance_to(ship_body.global_position) > ASTEROID_KEEP_DISTANCE:
+        if (
+            asteroid.global_position.distance_to(ship_body.global_position)
+            > ASTEROID_KEEP_DISTANCE
+        ):
+            asteroid.queue_free()
             remove_keys.append(str(key))
 
     for key in remove_keys:
-        var asteroid := asteroids.get(key, null) as SpaceAsteroid
-        if asteroid != null and is_instance_valid(asteroid):
-            asteroid.queue_free()
         asteroids.erase(key)
 
 
+func _maintain_asteroid_population() -> void:
+    # Population is count-based rather than travel/sector gated. This means
+    # asteroids exist immediately even if the player sits still for minutes,
+    # while the low target count keeps the field intentionally sparse.
+    var valid_count := 0
+    for value in asteroids.values():
+        if value != null and is_instance_valid(value):
+            valid_count += 1
+
+    var attempts := 0
+    while valid_count < ASTEROID_TARGET_COUNT and attempts < ASTEROID_SPAWN_ATTEMPTS:
+        attempts += 1
+        asteroid_spawn_sequence += 1
+
+        var seed_value: int = int(abs(hash(
+            "%s:%d" % [ship_id, asteroid_spawn_sequence]
+        )))
+        var rng := RandomNumberGenerator.new()
+        rng.seed = seed_value
+
+        var angle := rng.randf_range(0.0, TAU)
+        var radius := rng.randf_range(
+            ASTEROID_SPAWN_MIN_RADIUS,
+            ASTEROID_SPAWN_MAX_RADIUS
+        )
+        var candidate := (
+            ship_body.global_position
+            + Vector3(cos(angle), 0.0, sin(angle)) * radius
+        )
+
+        if not _asteroid_spawn_is_clear(candidate):
+            continue
+
+        var key := "field_%d" % asteroid_spawn_sequence
+        _spawn_asteroid(key, candidate, seed_value)
+        valid_count += 1
+
+
 func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
-    # Nothing may appear anywhere near the initial spawn, regardless of the
-    # current ship position or camera. This prevents a newly generated sector
-    # from ever placing a 20^3 asteroid over the launch area.
-    if world_position.distance_to(launch_position) < ASTEROID_LAUNCH_CENTER_CLEARANCE:
+    # The launch bubble is permanent, while current ship/camera clearance and
+    # asteroid-to-asteroid spacing prevent overlap as replacements are spawned.
+    if (
+        world_position.distance_to(launch_position)
+        < ASTEROID_LAUNCH_CENTER_CLEARANCE
+    ):
         return false
 
     var ship_clearance := (
@@ -971,6 +981,7 @@ func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
     for value in asteroids.values():
         if value == null or not is_instance_valid(value):
             continue
+
         var asteroid := value as SpaceAsteroid
         if (
             world_position.distance_to(asteroid.global_position)
