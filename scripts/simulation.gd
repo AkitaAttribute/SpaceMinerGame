@@ -30,7 +30,8 @@ const ASTEROID_SPAWN_SURFACE_GAP := 32.0
 const ASTEROID_LAUNCH_CENTER_CLEARANCE := 72.0
 const ASTEROID_MIN_CENTER_SEPARATION := 140.0
 const ASTEROID_GENERATION_START_DISTANCE := 90.0
-const INITIAL_ASTEROID_FORWARD_DISTANCE := 110.0
+const INITIAL_ASTEROID_FORWARD_DISTANCE := 80.0
+const INITIAL_ASTEROID_SIDE_DISTANCE := 20.0
 
 const CAMERA_MOUSE_SENSITIVITY := 0.0026
 const CAMERA_TOUCH_SENSITIVITY := 0.0042
@@ -865,11 +866,14 @@ func _resolve_camera_obstruction(
 
 
 func _spawn_initial_asteroids() -> void:
-    # Keep exactly one starter asteroid immediately visible down the ship's
-    # forward axis, but far enough away that it cannot overlap the launch area.
+    # Spawn exactly one starter asteroid immediately, well clear of the ship
+    # but close enough to be visible from the opening camera.
+    var forward := _ship_forward_world()
+    var right := forward.cross(Vector3.UP).normalized()
     var initial_position := (
         launch_position
-        + _ship_forward_world() * INITIAL_ASTEROID_FORWARD_DISTANCE
+        + forward * INITIAL_ASTEROID_FORWARD_DISTANCE
+        + right * INITIAL_ASTEROID_SIDE_DISTANCE
     )
     _spawn_asteroid("origin_a", initial_position, 1001)
 
@@ -886,8 +890,6 @@ func _update_asteroids(delta: float) -> void:
 
 
 func _refresh_asteroid_sectors() -> void:
-    _purge_asteroids_from_launch_zone()
-
     if (
         ship_body.global_position.distance_to(launch_position)
         < ASTEROID_GENERATION_START_DISTANCE
@@ -943,25 +945,6 @@ func _refresh_asteroid_sectors() -> void:
         asteroids.erase(key)
 
 
-func _purge_asteroids_from_launch_zone() -> void:
-    var remove_keys: Array[String] = []
-    for key in asteroids:
-        var asteroid := asteroids.get(key, null) as SpaceAsteroid
-        if asteroid == null or not is_instance_valid(asteroid):
-            remove_keys.append(str(key))
-            continue
-
-        if (
-            asteroid.global_position.distance_to(launch_position)
-            < ASTEROID_LAUNCH_CENTER_CLEARANCE
-        ):
-            asteroid.queue_free()
-            remove_keys.append(str(key))
-
-    for key in remove_keys:
-        asteroids.erase(key)
-
-
 func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
     # Nothing may appear anywhere near the initial spawn, regardless of the
     # current ship position or camera. This prevents a newly generated sector
@@ -1008,8 +991,8 @@ func _spawn_asteroid(
 
     var asteroid := SpaceAsteroid.new()
     asteroid.name = "Asteroid_" + key.replace(":", "_")
-    asteroid_root.add_child(asteroid)
     asteroid.configure(key, world_position, seed_value)
+    asteroid_root.add_child(asteroid)
     asteroids[key] = asteroid
 
 
