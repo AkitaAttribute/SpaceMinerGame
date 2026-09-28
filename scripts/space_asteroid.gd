@@ -478,23 +478,50 @@ func _rebuild_debug_hitboxes() -> void:
     _debug_hitbox_root.name = "DebugHitboxes"
     add_child(_debug_hitbox_root)
 
+    var material := StandardMaterial3D.new()
+    material.albedo_color = Color(1.0, 0.35, 0.08, 1.0)
+    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    material.no_depth_test = true
+
     for box in _collision_boxes:
-        var mesh := BoxMesh.new()
-        mesh.size = box.size
-
-        var material := StandardMaterial3D.new()
-        material.albedo_color = Color(1.0, 0.35, 0.08, 0.16)
-        material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-        material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-        material.no_depth_test = true
-        material.cull_mode = BaseMaterial3D.CULL_DISABLED
-        mesh.material = material
-
         var instance := MeshInstance3D.new()
-        instance.mesh = mesh
+        instance.mesh = _make_debug_box_outline(box.size, material)
         instance.position = box.position + box.size * 0.5
         instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
         _debug_hitbox_root.add_child(instance)
+
+
+func _make_debug_box_outline(
+    size: Vector3,
+    material: Material
+) -> ImmediateMesh:
+    var half := size * 0.5
+    var corners: Array[Vector3] = [
+        Vector3(-half.x, -half.y, -half.z),
+        Vector3(half.x, -half.y, -half.z),
+        Vector3(half.x, half.y, -half.z),
+        Vector3(-half.x, half.y, -half.z),
+        Vector3(-half.x, -half.y, half.z),
+        Vector3(half.x, -half.y, half.z),
+        Vector3(half.x, half.y, half.z),
+        Vector3(-half.x, half.y, half.z),
+    ]
+    var edges := [
+        Vector2i(0, 1), Vector2i(1, 2),
+        Vector2i(2, 3), Vector2i(3, 0),
+        Vector2i(4, 5), Vector2i(5, 6),
+        Vector2i(6, 7), Vector2i(7, 4),
+        Vector2i(0, 4), Vector2i(1, 5),
+        Vector2i(2, 6), Vector2i(3, 7),
+    ]
+
+    var mesh := ImmediateMesh.new()
+    mesh.surface_begin(Mesh.PRIMITIVE_LINES, material)
+    for edge in edges:
+        mesh.surface_add_vertex(corners[edge.x])
+        mesh.surface_add_vertex(corners[edge.y])
+    mesh.surface_end()
+    return mesh
 
 
 func _collision_cell_available(
