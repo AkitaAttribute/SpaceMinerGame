@@ -14,7 +14,10 @@ const LATERAL_DRAG := 2.8
 const RUDDER_GAIN := 0.032
 const YAW_DAMPING := 1.7
 const MAX_YAW_RATE := deg_to_rad(58.0)
-const COLLISION_NUDGE := 1.35
+const COLLISION_POSITION_NUDGE := 1.25
+const COLLISION_TURN_ACCELERATION := deg_to_rad(85.0)
+const COLLISION_MAX_TURN_RATE := deg_to_rad(28.0)
+const COLLISION_SPEED_RETENTION := 0.78
 
 const MAX_HEEL := deg_to_rad(11.0)
 const HEEL_SPRING := 9.0
@@ -641,6 +644,10 @@ func _update_ship_motion(delta: float) -> void:
     var throttle := 0.0
     var steer := 0.0
 
+    var forward := _ship_forward_world()
+    var right := forward.cross(Vector3.UP).normalized()
+    var current_forward_speed := ship_body.velocity.dot(forward)
+
     if _is_mobile_platform():
         var mobile_input := _mobile_flight_input()
         steer = mobile_input.x
@@ -654,19 +661,23 @@ func _update_ship_motion(delta: float) -> void:
         )
 
         if reverse_input > 0.0:
-            # S applies thrust opposite the ship's forward axis. At forward
-            # speed this behaves as braking; held longer it drives in reverse.
+            # S always requests reverse thrust. While moving forward it brakes;
+            # once moving backward it continues to propel the ship backward.
             throttle = -reverse_input
-        else:
-            # W is not required for movement. A or D alone still requests
-            # forward propulsion while simultaneously asking for a turn.
-            throttle = maxf(forward_input, absf(steer))
-
-    var forward := _ship_forward_world()
-    var right := forward.cross(Vector3.UP).normalized()
+        elif forward_input > 0.0:
+            throttle = forward_input
+        elif absf(steer) > 0.0:
+            # A/D alone provides propulsion, but preserves the current travel
+            # direction. If the ship is already reversing, steering alone must
+            # not suddenly inject forward thrust.
+            throttle = (
+                -absf(steer)
+                if current_forward_speed < -0.05
+                else absf(steer)
+            )
 
     # Resolve inertial velocity along the actual thrust-defined hull axes.
-    surge_speed = ship_body.velocity.dot(forward)
+    surge_speed = current_forward_speed
     sway_speed = ship_body.velocity.dot(right)
 
     var surge_acceleration := (
@@ -710,20 +721,61 @@ func _update_ship_motion(delta: float) -> void:
     yaw_rate = clampf(yaw_rate, -MAX_YAW_RATE, MAX_YAW_RATE)
     ship_body.rotation.y += yaw_rate * delta
 
+    var pre_collision_velocity := ship_body.velocity
     var collided := ship_body.move_and_slide()
     ship_body.global_position.y = 0.0
     ship_body.velocity.y = 0.0
 
     if collided:
+        var away_normal := Vector3.ZERO
+        var valid_normals := 0
+
         for collision_index in range(ship_body.get_slide_collision_count()):
             var collision := ship_body.get_slide_collision(collision_index)
             var normal := collision.get_normal()
             normal.y = 0.0
-            if normal.length_squared() > 0.001:
-                normal = normal.normalized()
-                ship_body.velocity += normal * COLLISION_NUDGE
-        ship_body.velocity *= 0.78
-        ship_body.velocity.y = 0.0
+            if normal.length_squared() <= 0.001:
+                continue
+
+            away_normal += normal.normalized()
+            valid_normals += 1
+
+        if valid_normals > 0 and away_normal.length_squared() > 0.001:
+            away_normal = away_normal.normalized()
+
+            # Separate the hull gently without injecting a large sideways
+            # velocity impulse. Preserve the existing travel direction and only
+            # reduce its magnitude on contact.
+            ship_body.global_position += (
+                away_normal
+                * COLLISION_POSITION_NUDGE
+                * delta
+            )
+            ship_body.global_position.y = 0.0
+            ship_body.velocity = (
+                pre_collision_velocity
+                * COLLISION_SPEED_RETENTION
+            )
+            ship_body.velocity.y = 0.0
+
+            # Turn the ship's nose gradually toward the collision normal
+            # (away from the asteroid). This changes heading rather than
+            # abruptly kicking the craft sideways across the plane.
+            var collision_forward := _ship_forward_world()
+            var away_angle := atan2(
+                collision_forward.cross(away_normal).y,
+                collision_forward.dot(away_normal)
+            )
+            var collision_target_yaw := clampf(
+                away_angle * 0.65,
+                -COLLISION_MAX_TURN_RATE,
+                COLLISION_MAX_TURN_RATE
+            )
+            yaw_rate = move_toward(
+                yaw_rate,
+                collision_target_yaw,
+                COLLISION_TURN_ACCELERATION * delta
+            )
 
     forward = _ship_forward_world()
     right = forward.cross(Vector3.UP).normalized()
