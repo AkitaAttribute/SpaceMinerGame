@@ -30,8 +30,7 @@ const ASTEROID_SPAWN_SURFACE_GAP := 32.0
 const ASTEROID_LAUNCH_CENTER_CLEARANCE := 72.0
 const ASTEROID_MIN_CENTER_SEPARATION := 140.0
 const ASTEROID_GENERATION_START_DISTANCE := 90.0
-const INITIAL_ASTEROID_FORWARD_DISTANCE := 90.0
-const INITIAL_ASTEROID_SIDE_DISTANCE := 50.0
+const INITIAL_ASTEROID_FORWARD_DISTANCE := 110.0
 
 const CAMERA_MOUSE_SENSITIVITY := 0.0026
 const CAMERA_TOUCH_SENSITIVITY := 0.0042
@@ -503,9 +502,17 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _orbit_camera_from_delta(delta_pixels: Vector2, sensitivity: float) -> void:
-    camera_yaw_offset -= delta_pixels.x * sensitivity
+    var horizontal_sign := 1.0 if AppSettings.invert_camera_horizontal else -1.0
+    var vertical_sign := 1.0 if AppSettings.invert_camera_vertical else -1.0
+
+    camera_yaw_offset += (
+        delta_pixels.x
+        * sensitivity
+        * horizontal_sign
+    )
     camera_pitch = clampf(
-        camera_pitch - delta_pixels.y * sensitivity,
+        camera_pitch
+        + delta_pixels.y * sensitivity * vertical_sign,
         CAMERA_MIN_PITCH,
         CAMERA_MAX_PITCH
     )
@@ -530,6 +537,7 @@ func _open_menu() -> void:
 
     for spec in [
         ["Resume", "resume"],
+        ["Controls", "controls"],
         ["Return to Builder", "builder"],
         ["Exit to Ship Selector", "selector"],
     ]:
@@ -538,6 +546,43 @@ func _open_menu() -> void:
         button.custom_minimum_size = Vector2(0.0, 56.0)
         button.pressed.connect(_flight_menu_action.bind(spec[1]))
         menu_content.add_child(button)
+
+
+func _show_flight_controls_menu() -> void:
+    for child in menu_content.get_children():
+        child.queue_free()
+
+    var header := HBoxContainer.new()
+    header.add_theme_constant_override("separation", 10)
+    menu_content.add_child(header)
+
+    var back := Button.new()
+    back.text = "← Back"
+    back.pressed.connect(_open_menu)
+    header.add_child(back)
+
+    var title := Label.new()
+    title.text = "Controls"
+    title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    title.add_theme_font_size_override("font_size", 26)
+    header.add_child(title)
+
+    var invert_horizontal := CheckButton.new()
+    invert_horizontal.text = "Invert horizontal camera movement"
+    invert_horizontal.button_pressed = AppSettings.invert_camera_horizontal
+    invert_horizontal.toggled.connect(func(value: bool):
+        AppSettings.set_invert_camera_horizontal(value)
+    )
+    menu_content.add_child(invert_horizontal)
+
+    var invert_vertical := CheckButton.new()
+    invert_vertical.text = "Invert vertical camera movement"
+    invert_vertical.button_pressed = AppSettings.invert_camera_vertical
+    invert_vertical.toggled.connect(func(value: bool):
+        AppSettings.set_invert_camera_vertical(value)
+    )
+    menu_content.add_child(invert_vertical)
 
 
 func _close_menu() -> void:
@@ -553,6 +598,8 @@ func _flight_menu_action(action: String) -> void:
     match action:
         "resume":
             _close_menu()
+        "controls":
+            _show_flight_controls_menu()
         "builder":
             if not _is_mobile_platform():
                 Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
@@ -818,14 +865,12 @@ func _resolve_camera_obstruction(
 
 
 func _spawn_initial_asteroids() -> void:
-    var forward := _ship_forward_world()
-    var right := forward.cross(Vector3.UP).normalized()
+    # Keep exactly one starter asteroid immediately visible down the ship's
+    # forward axis, but far enough away that it cannot overlap the launch area.
     var initial_position := (
         launch_position
-        + forward * INITIAL_ASTEROID_FORWARD_DISTANCE
-        + right * INITIAL_ASTEROID_SIDE_DISTANCE
+        + _ship_forward_world() * INITIAL_ASTEROID_FORWARD_DISTANCE
     )
-
     _spawn_asteroid("origin_a", initial_position, 1001)
 
 
