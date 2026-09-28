@@ -594,7 +594,7 @@ func _refresh_asteroid_sectors() -> void:
             if asteroids.has(key):
                 continue
 
-            var seed_value := abs(hash(Vector2i(sx, sz)))
+            var seed_value: int = int(abs(hash(Vector2i(sx, sz))))
             var rng := RandomNumberGenerator.new()
             rng.seed = seed_value
             var position := Vector3(
@@ -748,7 +748,7 @@ func _track_laser_pivot(
     target_position: Vector3,
     delta: float
 ) -> void:
-    var parent := pivot.get_parent_node_3d()
+    var parent := pivot.get_parent() as Node3D
     if parent == null:
         return
 
