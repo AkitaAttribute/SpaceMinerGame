@@ -42,7 +42,6 @@ var part_cards: HBoxContainer
 var color_slot_select: OptionButton
 var color_picker: ColorPickerButton
 var place_button: Button
-var level_label: Label
 var controls_root: Control
 var dpad_root: Control
 var vertical_controls_root: Control
@@ -79,6 +78,10 @@ var palette: Dictionary
 
 func _ready() -> void:
     process_mode = Node.PROCESS_MODE_ALWAYS
+
+    if OS.has_feature("mobile") and DisplayServer.has_feature(DisplayServer.FEATURE_ORIENTATION):
+        DisplayServer.screen_set_orientation(DisplayServer.SCREEN_SENSOR_LANDSCAPE)
+
     for index in range(PartFactory.part_count()):
         part_colors[index] = PartFactory.default_colors(index)
     _build_world()
@@ -87,6 +90,7 @@ func _ready() -> void:
     AppSettings.theme_changed.connect(_apply_theme)
     AppSettings.highlight_color_changed.connect(_refresh_selection_highlight)
     AppSettings.controls_visibility_changed.connect(_refresh_controls_visibility)
+    AppSettings.controls_scale_changed.connect(_apply_control_scale)
     AppSettings.bindings_changed.connect(_on_bindings_changed)
     _apply_theme()
     _refresh_controls_visibility()
@@ -228,13 +232,6 @@ func _build_ui() -> void:
     _build_ship_selector()
     _build_menu_overlay()
 
-    level_label = Label.new()
-    level_label.position = Vector2(16.0, 14.0)
-    level_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    level_label.add_theme_font_size_override("font_size", 18)
-    ui_root.add_child(level_label)
-    _update_level_label()
-
 func _build_parts_panel() -> void:
     parts_panel = PanelContainer.new()
     parts_panel.set_anchors_preset(Control.PRESET_LEFT_WIDE)
@@ -323,10 +320,12 @@ func _build_parts_panel() -> void:
     actions.add_child(remove_button)
 
     parts_tab = Button.new()
-    parts_tab.text = "PARTS"
-    parts_tab.rotation = -PI * 0.5
-    parts_tab.custom_minimum_size = Vector2(108.0, 42.0)
-    parts_tab.position = Vector2(-30.0, 330.0)
+    parts_tab.text = "Parts"
+    parts_tab.position = Vector2(16.0, 14.0)
+    parts_tab.size = Vector2(112.0, 52.0)
+    parts_tab.custom_minimum_size = Vector2(112.0, 52.0)
+    parts_tab.add_theme_font_size_override("font_size", 18)
+    parts_tab.modulate.a = 0.86
     parts_tab.pressed.connect(func(): _set_parts_open(true))
     ui_root.add_child(parts_tab)
 
@@ -399,6 +398,8 @@ func _build_touch_controls() -> void:
     vertical_down.pressed.connect(func(): _change_level(-1))
     vertical_controls_root.add_child(vertical_up)
     vertical_controls_root.add_child(vertical_down)
+
+    _apply_control_scale()
 
 func _control_button(text_value: String, position_value: Vector2, size_value: Vector2) -> Button:
     var button := Button.new()
@@ -689,7 +690,6 @@ func _show_ship_selector() -> void:
     selector_root.visible = true
     selector_gear_button.visible = not menu_open
     gear_button.visible = false
-    level_label.visible = false
     controls_root.visible = false
     parts_tab.visible = false
 
@@ -701,7 +701,6 @@ func _show_builder() -> void:
     selector_root.visible = false
     selector_gear_button.visible = false
     gear_button.visible = not menu_open
-    level_label.visible = true
     parts_tab.visible = not parts_open
 
     _set_builder_world_visible(true)
@@ -1496,6 +1495,42 @@ func _show_controls_menu() -> void:
     show_controls.toggled.connect(func(value: bool): AppSettings.set_show_controls_on_desktop(value))
     menu_content.add_child(show_controls)
 
+    var scale_label := Label.new()
+    scale_label.text = "D-pad / Z controls scale (%)"
+    scale_label.modulate.a = 0.86
+    menu_content.add_child(scale_label)
+
+    var scale_row := HBoxContainer.new()
+    scale_row.add_theme_constant_override("separation", 8)
+    menu_content.add_child(scale_row)
+
+    var scale_down := Button.new()
+    scale_down.text = "◀"
+    scale_down.custom_minimum_size = Vector2(52.0, 46.0)
+    scale_row.add_child(scale_down)
+
+    var scale_input := LineEdit.new()
+    scale_input.text = _format_control_scale_percent(AppSettings.controls_scale_percent)
+    scale_input.placeholder_text = "100"
+    scale_input.alignment = HORIZONTAL_ALIGNMENT_CENTER
+    scale_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    scale_input.custom_minimum_size = Vector2(120.0, 46.0)
+    scale_row.add_child(scale_input)
+
+    var scale_up := Button.new()
+    scale_up.text = "▶"
+    scale_up.custom_minimum_size = Vector2(52.0, 46.0)
+    scale_row.add_child(scale_up)
+
+    scale_down.pressed.connect(_nudge_control_scale.bind(-10.0, scale_input))
+    scale_up.pressed.connect(_nudge_control_scale.bind(10.0, scale_input))
+    scale_input.text_submitted.connect(func(_value: String):
+        _commit_control_scale_input(scale_input)
+    )
+    scale_input.focus_exited.connect(func():
+        _commit_control_scale_input(scale_input)
+    )
+
     var scroll := ScrollContainer.new()
     scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
     scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
@@ -1557,6 +1592,47 @@ func _menu_title(value: String) -> Label:
     label.add_theme_font_size_override("font_size", 26)
     return label
 
+func _format_control_scale_percent(value: float) -> String:
+    if is_equal_approx(value, round(value)):
+        return str(int(round(value)))
+    return "%.2f" % value
+
+
+func _nudge_control_scale(delta: float, input: LineEdit) -> void:
+    var value := AppSettings.controls_scale_percent + delta
+    AppSettings.set_controls_scale_percent(value)
+    input.text = _format_control_scale_percent(value)
+
+
+func _commit_control_scale_input(input: LineEdit) -> void:
+    var text_value := input.text.strip_edges()
+    if not text_value.is_valid_float():
+        input.text = _format_control_scale_percent(AppSettings.controls_scale_percent)
+        return
+
+    var value := text_value.to_float()
+    AppSettings.set_controls_scale_percent(value)
+    input.text = _format_control_scale_percent(value)
+
+
+func _apply_control_scale() -> void:
+    if dpad_root == null or vertical_controls_root == null:
+        return
+
+    # Intentionally unbounded: the setting is a direct percentage and the
+    # controls menu does not impose a minimum or maximum.
+    var scale_value := AppSettings.controls_scale_percent / 100.0
+    var control_scale := Vector2(scale_value, scale_value)
+
+    dpad_root.scale = control_scale
+    vertical_controls_root.scale = control_scale
+
+    # Scale the original bottom-right offsets too, keeping the D-pad, bumpers,
+    # Z controls, button dimensions, and all gaps proportional to each other.
+    dpad_root.position = Vector2(-390.0, -230.0) * scale_value
+    vertical_controls_root.position = Vector2(-116.0, -198.0) * scale_value
+
+
 func _begin_binding_capture(action: StringName, slot: int) -> void:
     waiting_for_binding = true
     binding_action = action
@@ -1604,7 +1680,6 @@ func _perform_dpad(action: StringName) -> void:
     _refresh_selection_highlight()
     if PartFactory.is_color_tool(selected_part):
         _refresh_color_controls()
-    _update_level_label()
 
 func _rotation_direction_color(action: StringName) -> Color:
     match action:
@@ -1925,7 +2000,6 @@ func _change_level(delta: int) -> void:
     _refresh_selection_highlight()
     if PartFactory.is_color_tool(selected_part):
         _refresh_color_controls()
-    _update_level_label()
     _rebuild_grid()
 
 func _cycle_part(delta: int) -> void:
@@ -2623,10 +2697,6 @@ func _cursor_world_position() -> Vector3:
         float(cursor.z) + 0.5,
         float(cursor.y) + 0.5
     )
-
-func _update_level_label() -> void:
-    if level_label != null:
-        level_label.text = "GRID  X %d   Y %d   Z %d" % [cursor.x, cursor.y, cursor.z]
 
 func _rebuild_grid() -> void:
     if grid_root == null:
