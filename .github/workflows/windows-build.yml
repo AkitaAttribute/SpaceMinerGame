@@ -64,6 +64,22 @@ jobs:
             exit 1
           fi
 
+      - name: Simulation smoke test
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          timeout 10s godot --headless --path . -- --simulation-smoke 2>&1 | tee /tmp/godot-simulation.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ $status -ne 0 && $status -ne 124 ]]; then
+            exit $status
+          fi
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Invalid call|Invalid access|Condition .* is true|ERROR:" /tmp/godot-simulation.log; then
+            echo "Godot reported errors while exercising the mining simulation."
+            exit 1
+          fi
+
       - name: Export Windows executable
         shell: bash
         run: |
