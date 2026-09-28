@@ -27,6 +27,8 @@ var _remaining_cells := TOTAL_CELLS
 var _visual: MeshInstance3D
 var _collision_shapes: Array[CollisionShape3D] = []
 var _collision_boxes: Array[AABB] = []
+var _debug_hitboxes_visible := false
+var _debug_hitbox_root: Node3D
 
 
 func configure(id_value: String, world_position: Vector3, seed_value: int) -> void:
@@ -455,6 +457,44 @@ func _rebuild_collision() -> void:
                 collision_shape.position = box.position + box.size * 0.5
                 add_child(collision_shape)
                 _collision_shapes.append(collision_shape)
+
+    _rebuild_debug_hitboxes()
+
+
+func set_debug_hitboxes_visible(value: bool) -> void:
+    _debug_hitboxes_visible = value
+    _rebuild_debug_hitboxes()
+
+
+func _rebuild_debug_hitboxes() -> void:
+    if _debug_hitbox_root != null and is_instance_valid(_debug_hitbox_root):
+        _debug_hitbox_root.queue_free()
+        _debug_hitbox_root = null
+
+    if not _debug_hitboxes_visible:
+        return
+
+    _debug_hitbox_root = Node3D.new()
+    _debug_hitbox_root.name = "DebugHitboxes"
+    add_child(_debug_hitbox_root)
+
+    for box in _collision_boxes:
+        var mesh := BoxMesh.new()
+        mesh.size = box.size
+
+        var material := StandardMaterial3D.new()
+        material.albedo_color = Color(1.0, 0.35, 0.08, 0.16)
+        material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+        material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+        material.no_depth_test = true
+        material.cull_mode = BaseMaterial3D.CULL_DISABLED
+        mesh.material = material
+
+        var instance := MeshInstance3D.new()
+        instance.mesh = mesh
+        instance.position = box.position + box.size * 0.5
+        instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+        _debug_hitbox_root.add_child(instance)
 
 
 func _collision_cell_available(
