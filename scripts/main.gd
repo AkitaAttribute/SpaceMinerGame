@@ -94,7 +94,16 @@ func _ready() -> void:
     _rebuild_grid()
     _refresh_selection_highlight()
     _update_camera()
-    _show_ship_selector()
+
+    var launch := ShipStore.take_view_request()
+    var launch_view := str(launch.get("view", "selector"))
+    var launch_ship_id := str(launch.get("ship_id", ""))
+    if launch_view == "builder" and not launch_ship_id.is_empty():
+        current_ship_id = launch_ship_id
+        _load_ship_model(launch_ship_id)
+        _show_builder()
+    else:
+        _show_ship_selector()
 
 func _notification(what: int) -> void:
     if what == NOTIFICATION_APPLICATION_FOCUS_IN and AppSettings.theme_mode == "system" and ui_root != null:
@@ -1132,9 +1141,15 @@ func _show_root_menu() -> void:
 
     var specs: Array = [
         ["Resume", "resume"],
+    ]
+
+    if view_mode == "builder":
+        specs.append(["Test Flight", "simulate"])
+
+    specs.append_array([
         ["Display", "display"],
         ["Controls", "controls"],
-    ]
+    ])
 
     if view_mode == "builder":
         specs.append(["Exit to Ship Selector", "ships"])
@@ -1154,6 +1169,8 @@ func _root_menu_action(action: String) -> void:
             _close_menu()
         "ships":
             _return_to_ship_selector()
+        "simulate":
+            _launch_simulation()
         "display":
             _show_display_menu()
         "controls":
@@ -1162,6 +1179,14 @@ func _root_menu_action(action: String) -> void:
             if view_mode == "builder":
                 _save_current_ship_model()
             get_tree().quit()
+
+func _launch_simulation() -> void:
+    if current_ship_id.is_empty():
+        return
+
+    _save_current_ship_model()
+    ShipStore.request_view("simulation", current_ship_id)
+    get_tree().change_scene_to_file("res://simulation.tscn")
 
 func _open_ship_model_menu(model_id: String) -> void:
     menu_ship_id = model_id
