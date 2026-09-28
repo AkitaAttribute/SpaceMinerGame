@@ -15,7 +15,7 @@ const RUDDER_GAIN := 0.032
 const YAW_DAMPING := 1.7
 const MAX_YAW_RATE := deg_to_rad(58.0)
 const COLLISION_RECOVERY_DURATION := 1.35
-const COLLISION_RECOVERY_PUSH_DISTANCE := 5.0
+const COLLISION_RECOVERY_CLEARANCE := 10.0
 const COLLISION_RECOVERY_TURN := PI * 0.5
 
 const MAX_HEEL := deg_to_rad(11.0)
@@ -76,8 +76,9 @@ var collision_recovery_elapsed := 0.0
 var collision_recovery_start_yaw := 0.0
 var collision_recovery_target_yaw := 0.0
 var collision_recovery_normal := Vector3.ZERO
-var collision_recovery_velocity := Vector3.ZERO
-var collision_recovery_push_remaining := 0.0
+var collision_recovery_target_position := Vector3.ZERO
+var collision_recovery_safe_radius := 0.0
+var collision_recovery_asteroid: SpaceAsteroid
 var asteroid_update_time := 0.0
 var asteroid_spawn_sequence := 0
 var beam_time := 0.0
@@ -732,7 +733,6 @@ func _update_ship_motion(delta: float) -> void:
     yaw_rate = clampf(yaw_rate, -MAX_YAW_RATE, MAX_YAW_RATE)
     ship_body.rotation.y += yaw_rate * delta
 
-    var pre_collision_velocity := ship_body.velocity
     var collided := ship_body.move_and_slide()
     ship_body.global_position.y = 0.0
     ship_body.velocity.y = 0.0
@@ -740,21 +740,24 @@ func _update_ship_motion(delta: float) -> void:
     if collided:
         var away_normal := Vector3.ZERO
         var valid_normals := 0
+        var hit_asteroid: SpaceAsteroid = null
 
         for collision_index in range(ship_body.get_slide_collision_count()):
             var collision := ship_body.get_slide_collision(collision_index)
             var normal := collision.get_normal()
             normal.y = 0.0
-            if normal.length_squared() <= 0.001:
-                continue
+            if normal.length_squared() > 0.001:
+                away_normal += normal.normalized()
+                valid_normals += 1
 
-            away_normal += normal.normalized()
-            valid_normals += 1
+            var collider = collision.get_collider()
+            if collider is SpaceAsteroid:
+                hit_asteroid = collider as SpaceAsteroid
 
         if valid_normals > 0 and away_normal.length_squared() > 0.001:
             _begin_collision_recovery(
                 away_normal.normalized(),
-                pre_collision_velocity
+                hit_asteroid
             )
 
     forward = _ship_forward_world()
@@ -785,20 +788,23 @@ func _update_ship_motion(delta: float) -> void:
 
 func _begin_collision_recovery(
     away_normal: Vector3,
-    preserved_velocity: Vector3
+    asteroid: SpaceAsteroid
 ) -> void:
     collision_recovery_active = true
     collision_recovery_elapsed = 0.0
     collision_recovery_normal = away_normal
-    collision_recovery_velocity = preserved_velocity
-    collision_recovery_velocity.y = 0.0
-    collision_recovery_push_remaining = COLLISION_RECOVERY_PUSH_DISTANCE
+    collision_recovery_asteroid = asteroid
+
+    # A crash now kills all ship momentum immediately. Recovery movement is a
+    # positional separation only; normal thrust/boat physics stay disabled
+    # until the ship is completely outside the 10-cell safety radius.
+    ship_body.velocity = Vector3.ZERO
+    surge_speed = 0.0
+    sway_speed = 0.0
+    yaw_rate = 0.0
 
     collision_recovery_start_yaw = ship_body.rotation.y
 
-    # Choose the 90-degree direction whose resulting ship-forward points most
-    # away from the asteroid. The recovery turn is intentionally independent
-    # of the normal boat/rudder model.
     var current_forward := _ship_forward_world()
     var plus_forward := current_forward.rotated(
         Vector3.UP,
@@ -816,75 +822,120 @@ func _begin_collision_recovery(
     collision_recovery_target_yaw = (
         collision_recovery_start_yaw + turn_amount
     )
-    yaw_rate = 0.0
+
+    if asteroid != null and is_instance_valid(asteroid):
+        # Use a conservative radius around the full 20x20x20 asteroid. The
+        # shortest safe escape is directly outward from its center. Including
+        # the ship radius means the entire ship, not just its origin, clears
+        # the asteroid by at least ten builder cells in every direction.
+        var asteroid_center := asteroid.global_position
+        var radial := ship_body.global_position - asteroid_center
+        radial.y = 0.0
+
+        if radial.length_squared() <= 0.001:
+            radial = away_normal
+        else:
+            radial = radial.normalized()
+
+        collision_recovery_normal = radial
+        collision_recovery_safe_radius = (
+            ASTEROID_HALF_DIAGONAL
+            + model_radius
+            + COLLISION_RECOVERY_CLEARANCE
+        )
+        collision_recovery_target_position = (
+            asteroid_center
+            + radial * collision_recovery_safe_radius
+        )
+        collision_recovery_target_position.y = 0.0
+    else:
+        # Fallback when the collider is unavailable: still separate ten cells
+        # along the contact normal.
+        collision_recovery_safe_radius = 0.0
+        collision_recovery_target_position = (
+            ship_body.global_position
+            + away_normal * COLLISION_RECOVERY_CLEARANCE
+        )
+        collision_recovery_target_position.y = 0.0
 
 
 func _update_collision_recovery(delta: float) -> void:
-    # While recovery is active, additional asteroid contacts are deliberately
-    # ignored. One collision can cause only one 90-degree avoidance turn until
-    # the full five-cell separation has actually been applied.
-    var remaining_time := maxf(
-        0.0001,
-        COLLISION_RECOVERY_DURATION - collision_recovery_elapsed
-    )
-    var frame_time := minf(delta, remaining_time)
+    # No normal input, acceleration, or retained momentum is allowed during
+    # recovery. In particular, nothing may push the ship back toward the
+    # asteroid before the full ten-cell clearance has been reached.
+    ship_body.velocity = Vector3.ZERO
+    surge_speed = 0.0
+    sway_speed = 0.0
+    yaw_rate = 0.0
 
-    # Preserve the ship's existing movement vector. Collision recovery adds no
-    # acceleration and does not consume speed; move_and_slide only prevents the
-    # preserved motion from penetrating the asteroid.
-    ship_body.velocity = collision_recovery_velocity
-    ship_body.move_and_slide()
-    ship_body.velocity = collision_recovery_velocity
-    ship_body.velocity.y = 0.0
-
-    # Apply the five-cell separation as positional correction. Track the actual
-    # remaining correction so recovery cannot finish (or retrigger another
-    # turn) until the complete requested distance has been applied.
-    var requested_push := (
-        COLLISION_RECOVERY_PUSH_DISTANCE
-        * frame_time
-        / COLLISION_RECOVERY_DURATION
-    )
-    var applied_push := minf(
-        collision_recovery_push_remaining,
-        requested_push
-    )
-    ship_body.global_position += collision_recovery_normal * applied_push
-    ship_body.global_position.y = 0.0
-    collision_recovery_push_remaining = maxf(
-        0.0,
-        collision_recovery_push_remaining - applied_push
-    )
-
-    collision_recovery_elapsed += frame_time
-    var progress := clampf(
+    collision_recovery_elapsed += delta
+    var turn_progress := clampf(
         collision_recovery_elapsed / COLLISION_RECOVERY_DURATION,
         0.0,
         1.0
     )
-    var smooth_progress := progress * progress * (3.0 - 2.0 * progress)
+    var smooth_turn := (
+        turn_progress
+        * turn_progress
+        * (3.0 - 2.0 * turn_progress)
+    )
     ship_body.rotation.y = lerp_angle(
         collision_recovery_start_yaw,
         collision_recovery_target_yaw,
-        smooth_progress
+        smooth_turn
     )
 
-    # Do not let the visual heel exaggerate the forced avoidance turn.
+    # Move directly toward the nearest point that satisfies the radial safety
+    # requirement. This is deterministic positional correction, not thrust.
+    var remaining_distance := ship_body.global_position.distance_to(
+        collision_recovery_target_position
+    )
+    if remaining_distance > 0.0001:
+        var required_speed := (
+            remaining_distance
+            / maxf(
+                0.05,
+                COLLISION_RECOVERY_DURATION - minf(
+                    collision_recovery_elapsed,
+                    COLLISION_RECOVERY_DURATION - 0.05
+                )
+            )
+        )
+        ship_body.global_position = ship_body.global_position.move_toward(
+            collision_recovery_target_position,
+            required_speed * delta
+        )
+        ship_body.global_position.y = 0.0
+
     heel_velocity = 0.0
     heel_angle = move_toward(heel_angle, 0.0, delta * 1.8)
     ship_visual_root.rotation.z = heel_angle
+    _set_thruster_emission(false)
 
-    _set_thruster_emission(collision_recovery_velocity.length_squared() > 0.01)
+    var position_clear := (
+        ship_body.global_position.distance_to(
+            collision_recovery_target_position
+        ) <= 0.01
+    )
 
     if (
-        collision_recovery_elapsed >= COLLISION_RECOVERY_DURATION
-        and collision_recovery_push_remaining <= 0.0001
+        collision_recovery_asteroid != null
+        and is_instance_valid(collision_recovery_asteroid)
     ):
+        var radial_distance := ship_body.global_position.distance_to(
+            collision_recovery_asteroid.global_position
+        )
+        position_clear = (
+            radial_distance >= collision_recovery_safe_radius - 0.01
+        )
+
+    if turn_progress >= 1.0 and position_clear:
         ship_body.rotation.y = collision_recovery_target_yaw
-        ship_body.velocity = collision_recovery_velocity
+        ship_body.velocity = Vector3.ZERO
         collision_recovery_active = false
         collision_recovery_elapsed = 0.0
-        collision_recovery_push_remaining = 0.0
+        collision_recovery_safe_radius = 0.0
+        collision_recovery_asteroid = null
         yaw_rate = 0.0
 
 
