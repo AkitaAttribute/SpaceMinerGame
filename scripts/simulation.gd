@@ -462,31 +462,52 @@ func _update_ship_motion(delta: float) -> void:
         - Input.get_action_strength(&"builder_left")
     )
 
+    # Resolve the existing inertial velocity into the hull's current axes.
+    # We then apply surge and sway forces back into world velocity rather than
+    # rotating the velocity vector with the hull. That preserves drift/slip in
+    # a turn and lets the strong lateral water resistance remove it gradually.
+    var basis_before_turn := ship_body.global_basis
+    var local_velocity := basis_before_turn.inverse() * ship_body.velocity
+    sway_speed = local_velocity.x
+    surge_speed = -local_velocity.z
+
+    var forward := basis_before_turn * Vector3.FORWARD
+    var right := basis_before_turn * Vector3.RIGHT
+
     var surge_acceleration := (
         throttle * ENGINE_ACCELERATION
         - LONGITUDINAL_DRAG * surge_speed * absf(surge_speed)
     )
-    surge_speed += surge_acceleration * delta
-    surge_speed = clampf(
-        surge_speed,
-        -MAX_REVERSE_SPEED,
-        MAX_FORWARD_SPEED
+    var sway_acceleration := (
+        -LATERAL_DRAG
+        * sway_speed
+        * maxf(0.35, absf(sway_speed))
     )
 
-    # A displacement hull strongly resists sideways motion. The sway term is
-    # intentionally much more damped than surge so the craft arcs like a boat
-    # instead of strafing like a six-axis spacecraft.
-    sway_speed = move_toward(
-        sway_speed,
-        0.0,
-        LATERAL_DRAG * maxf(0.35, absf(sway_speed)) * delta
+    ship_body.velocity += forward * surge_acceleration * delta
+    ship_body.velocity += right * sway_acceleration * delta
+    ship_body.velocity.y = 0.0
+
+    # Clamp only the fore/aft component; lateral slip remains free to decay.
+    local_velocity = basis_before_turn.inverse() * ship_body.velocity
+    local_velocity.z = clampf(
+        local_velocity.z,
+        -MAX_FORWARD_SPEED,
+        MAX_REVERSE_SPEED
     )
+    ship_body.velocity = basis_before_turn * local_velocity
+    ship_body.velocity.y = 0.0
+    sway_speed = local_velocity.x
+    surge_speed = -local_velocity.z
 
     var steering_speed := maxf(absf(surge_speed), 0.35)
     var direction_sign := signf(surge_speed)
     if absf(direction_sign) < 0.5:
         direction_sign = 1.0
 
+    # Rudder authority scales with speed squared, while yaw has its own damping.
+    # This is a compact game-scale version of the surge/sway/yaw coupling used
+    # in marine manoeuvring models.
     var yaw_acceleration := (
         -steer
         * direction_sign
@@ -497,15 +518,11 @@ func _update_ship_motion(delta: float) -> void:
     )
     yaw_rate += yaw_acceleration * delta
     yaw_rate = clampf(yaw_rate, -MAX_YAW_RATE, MAX_YAW_RATE)
-
     ship_body.rotation.y += yaw_rate * delta
-
-    var local_velocity := Vector3(sway_speed, 0.0, -surge_speed)
-    ship_body.velocity = ship_body.global_basis * local_velocity
-    ship_body.velocity.y = 0.0
 
     var collided := ship_body.move_and_slide()
     ship_body.global_position.y = 0.0
+    ship_body.velocity.y = 0.0
 
     if collided:
         for collision_index in range(ship_body.get_slide_collision_count()):
@@ -515,11 +532,18 @@ func _update_ship_motion(delta: float) -> void:
             if normal.length_squared() > 0.001:
                 normal = normal.normalized()
                 ship_body.velocity += normal * COLLISION_NUDGE
-        surge_speed *= 0.72
-        sway_speed *= 0.45
+        ship_body.velocity *= 0.78
+        ship_body.velocity.y = 0.0
 
-    # In a turn, lateral acceleration is approximately speed * yaw-rate.
-    # Visual heel uses a damped restoring response rather than snapping.
+    var local_after_collision := (
+        ship_body.global_basis.inverse() * ship_body.velocity
+    )
+    sway_speed = local_after_collision.x
+    surge_speed = -local_after_collision.z
+
+    # For steady turning, lateral acceleration is approximately V * yaw-rate.
+    # Heel follows that acceleration through a damped restoring response rather
+    # than snapping directly to a cosmetic bank angle.
     var lateral_acceleration := -surge_speed * yaw_rate
     var target_heel := atan(
         lateral_acceleration / (9.81 * HEEL_STABILITY)
