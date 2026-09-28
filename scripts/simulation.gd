@@ -623,6 +623,10 @@ func _update_camera(delta: float) -> void:
         + Vector3.UP * (distance * 0.48)
     )
     var desired_target := ship_body.global_position + forward * 2.2
+    desired_position = _resolve_camera_obstruction(
+        desired_target,
+        desired_position
+    )
 
     # Fixed FOV, stable world-up horizon, no camera roll/head-bob, and
     # exponential position smoothing are intentional comfort choices.
@@ -639,6 +643,28 @@ func _update_camera(delta: float) -> void:
 
     camera.global_position = camera_position_smooth
     camera.look_at(camera_target_smooth, Vector3.UP)
+
+
+func _resolve_camera_obstruction(
+    target: Vector3,
+    desired_position: Vector3
+) -> Vector3:
+    var world := get_world_3d()
+    if world == null or ship_body == null:
+        return desired_position
+
+    var query := PhysicsRayQueryParameters3D.create(target, desired_position)
+    query.exclude = [ship_body.get_rid()]
+    query.collide_with_areas = false
+    query.collide_with_bodies = true
+
+    var hit := world.direct_space_state.intersect_ray(query)
+    if hit.is_empty():
+        return desired_position
+
+    var hit_position := hit.get("position", desired_position) as Vector3
+    var toward_ship := (target - hit_position).normalized()
+    return hit_position + toward_ship * 0.8
 
 
 func _spawn_initial_asteroids() -> void:
