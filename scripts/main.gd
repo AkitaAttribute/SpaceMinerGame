@@ -947,11 +947,15 @@ func _capture_current_ship_thumbnail(after_capture := Callable()) -> void:
     thumbnail_capture_ship_id = current_ship_id
     thumbnail_after_capture = after_capture
 
-    # Thumbnails represent the ship and last camera angle, not editor aids.
+    # Thumbnails contain the ship only. Hide every editor aid and the entire
+    # CanvasLayer so no grid, menus, D-pad, buttons, labels, or other UI can
+    # ever be captured with the model.
     grid_root.visible = false
     ghost_root.visible = false
     selection_highlight_root.visible = false
     rotation_guide_root.visible = false
+    if ui_layer != null:
+        ui_layer.visible = false
 
     get_tree().process_frame.connect(
         _finish_current_ship_thumbnail_capture,
@@ -988,6 +992,8 @@ func _finish_current_ship_thumbnail_capture() -> void:
         ghost_root.visible = true
         selection_highlight_root.visible = true
         rotation_guide_root.visible = true
+        if ui_layer != null:
+            ui_layer.visible = true
 
     var callback := thumbnail_after_capture
     thumbnail_after_capture = Callable()
@@ -1004,6 +1010,8 @@ func _cancel_pending_thumbnail_capture() -> void:
 
     if view_mode == "builder":
         _set_builder_world_visible(true)
+        if ui_layer != null:
+            ui_layer.visible = true
 
 
 func _mark_ship_changed() -> void:
