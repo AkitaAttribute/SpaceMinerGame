@@ -27,9 +27,10 @@ const ASTEROID_UPDATE_INTERVAL := 0.75
 const ASTEROID_SECTOR_SPAWN_CHANCE := 0.28
 const ASTEROID_HALF_DIAGONAL := 17.4
 const ASTEROID_SPAWN_SURFACE_GAP := 32.0
-const ASTEROID_LAUNCH_CENTER_CLEARANCE := 120.0
-const ASTEROID_MIN_CENTER_SEPARATION := 96.0
-const INITIAL_ASTEROID_DISTANCE := 160.0
+const ASTEROID_LAUNCH_CENTER_CLEARANCE := 140.0
+const ASTEROID_MIN_CENTER_SEPARATION := 140.0
+const ASTEROID_GENERATION_START_DISTANCE := 90.0
+const INITIAL_ASTEROID_DISTANCE := 220.0
 
 const CAMERA_MOUSE_SENSITIVITY := 0.0026
 const CAMERA_TOUCH_SENSITIVITY := 0.0042
@@ -81,6 +82,7 @@ var menu_content: VBoxContainer
 var menu_open := false
 
 var mobile_joystick: VirtualJoystick
+var mobile_last_turn_sign := 1.0
 
 
 func _ready() -> void:
@@ -585,14 +587,22 @@ func _physics_process(delta: float) -> void:
 
 
 func _update_ship_motion(delta: float) -> void:
-    var throttle := (
-        Input.get_action_strength(&"builder_up")
-        - Input.get_action_strength(&"builder_down")
-    )
-    var steer := (
-        Input.get_action_strength(&"builder_right")
-        - Input.get_action_strength(&"builder_left")
-    )
+    var throttle := 0.0
+    var steer := 0.0
+
+    if _is_mobile_platform():
+        var mobile_input := _mobile_flight_input()
+        steer = mobile_input.x
+        throttle = mobile_input.y
+    else:
+        throttle = (
+            Input.get_action_strength(&"builder_up")
+            - Input.get_action_strength(&"builder_down")
+        )
+        steer = (
+            Input.get_action_strength(&"builder_right")
+            - Input.get_action_strength(&"builder_left")
+        )
 
     var forward := _ship_forward_world()
     var right := forward.cross(Vector3.UP).normalized()
@@ -715,6 +725,37 @@ func _update_camera(delta: float) -> void:
     camera.look_at(camera_target_smooth, Vector3.UP)
 
 
+func _mobile_flight_input() -> Vector2:
+    var stick := Input.get_vector(
+        &"builder_left",
+        &"builder_right",
+        &"builder_up",
+        &"builder_down"
+    )
+    var magnitude := stick.length()
+    if magnitude <= 0.001:
+        return Vector2.ZERO
+
+    # Joystick up is forward. Any nonzero stick displacement supplies positive
+    # propulsion; its angle away from forward controls how urgently the ship
+    # tries to turn. 90 degrees or more requests maximum steering.
+    var angle_from_forward := atan2(stick.x, -stick.y)
+    var turn_sign := signf(angle_from_forward)
+
+    if absf(turn_sign) < 0.5 and stick.y > 0.0:
+        turn_sign = mobile_last_turn_sign
+    elif absf(turn_sign) >= 0.5:
+        mobile_last_turn_sign = turn_sign
+
+    var turn_urgency := clampf(
+        absf(angle_from_forward) / (PI * 0.5),
+        0.0,
+        1.0
+    )
+
+    return Vector2(turn_sign * turn_urgency, magnitude)
+
+
 func _ship_forward_world() -> Vector3:
     var forward := ship_body.global_basis * ship_forward_local
     forward.y = 0.0
@@ -769,14 +810,13 @@ func _resolve_camera_obstruction(
 
 
 func _spawn_initial_asteroids() -> void:
-    # One deliberately placed asteroid gives the player something to approach
-    # without putting either the ship or third-person camera inside a 20^3 body.
+    # Launch with exactly one known asteroid, deliberately far away. Procedural
+    # sectors are not considered until the ship has travelled away from spawn.
     _spawn_asteroid(
         "origin_a",
         launch_position + _ship_forward_world() * INITIAL_ASTEROID_DISTANCE,
         1001
     )
-    _refresh_asteroid_sectors()
 
 
 func _update_asteroids(delta: float) -> void:
@@ -791,6 +831,12 @@ func _update_asteroids(delta: float) -> void:
 
 
 func _refresh_asteroid_sectors() -> void:
+    if (
+        ship_body.global_position.distance_to(launch_position)
+        < ASTEROID_GENERATION_START_DISTANCE
+    ):
+        return
+
     var current_x := int(floor(ship_body.global_position.x / ASTEROID_SECTOR_SIZE))
     var current_z := int(floor(ship_body.global_position.z / ASTEROID_SECTOR_SIZE))
 
@@ -930,7 +976,7 @@ func _update_mining_lasers(delta: float) -> void:
             continue
 
         var asteroid := target as SpaceAsteroid
-        var target_position := asteroid.closest_cell_world(pivot.global_position)
+        var target_position := asteroid.global_position
         _track_laser_pivot(pivot, target_position, delta)
 
         var muzzle := _laser_muzzle_world(pivot)
