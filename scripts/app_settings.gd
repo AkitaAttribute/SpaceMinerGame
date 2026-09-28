@@ -168,7 +168,14 @@ func set_controls_scale_percent(value: float) -> void:
 
 
 func should_show_touch_controls() -> bool:
-    return OS.has_feature("mobile") or show_controls_on_desktop
+    # Check the concrete mobile platform tags as well as Godot's generic
+    # "mobile" feature so Android/iOS never depend on a single feature alias.
+    return (
+        OS.has_feature("android")
+        or OS.has_feature("ios")
+        or OS.has_feature("mobile")
+        or show_controls_on_desktop
+    )
 
 func get_action_label(action: StringName) -> String:
     return str(ACTION_LABELS.get(action, String(action)))
