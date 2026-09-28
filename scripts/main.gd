@@ -95,6 +95,9 @@ func _ready() -> void:
     _refresh_selection_highlight()
     _update_camera()
 
+    if _launch_simulation_smoke_if_requested():
+        return
+
     var launch := ShipStore.take_view_request()
     var launch_view := str(launch.get("view", "selector"))
     var launch_ship_id := str(launch.get("ship_id", ""))
@@ -104,6 +107,46 @@ func _ready() -> void:
         _show_builder()
     else:
         _show_ship_selector()
+
+func _launch_simulation_smoke_if_requested() -> bool:
+    if "--simulation-smoke" not in OS.get_cmdline_user_args():
+        return false
+
+    var metadata := ShipStore.create_model()
+    var smoke_ship_id := str(metadata.get("id", ""))
+    var identity_basis := [
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,
+    ]
+    ShipStore.save_model(smoke_ship_id, {
+        "version": 1,
+        "camera": {},
+        "parts": [
+            {
+                "part_id": "cube",
+                "anchor": [0, 0, 0],
+                "basis": identity_basis,
+                "colors": ["5f83c6ff"],
+            },
+            {
+                "part_id": "mining_laser",
+                "anchor": [1, 0, 0],
+                "basis": identity_basis,
+                "colors": ["5f83c6ff"],
+            },
+            {
+                "part_id": "thruster_t1",
+                "anchor": [0, 1, 0],
+                "basis": identity_basis,
+                "colors": ["25282fff"],
+            },
+        ],
+    })
+    ShipStore.request_view("simulation", smoke_ship_id)
+    get_tree().change_scene_to_file("res://simulation.tscn")
+    return true
+
 
 func _notification(what: int) -> void:
     if what == NOTIFICATION_APPLICATION_FOCUS_IN and AppSettings.theme_mode == "system" and ui_root != null:
