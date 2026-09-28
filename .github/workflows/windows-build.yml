@@ -22,6 +22,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Java 17 for Android
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Install Godot 4.7.1 and export templates
         shell: bash
         run: |
@@ -98,5 +104,41 @@ jobs:
         with:
           name: SpaceMinerGame-Windows-${{ github.sha }}
           path: build/SpaceMinerGame.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Prepare Android debug signing
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -d "$ANDROID_HOME"
+          test -x "$JAVA_HOME/bin/keytool"
+          mkdir -p "$HOME/.android"
+          if [[ ! -f "$HOME/.android/debug.keystore" ]]; then
+            "$JAVA_HOME/bin/keytool" -genkeypair -v               -keystore "$HOME/.android/debug.keystore"               -storepass android               -alias androiddebugkey               -keypass android               -keyalg RSA               -keysize 2048               -validity 10000               -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Export Android debug APK
+        shell: bash
+        env:
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ runner.home }}/.android/debug.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
+        run: |
+          set -o pipefail
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" build/SpaceMinerGame-Android.apk 2>&1 | tee /tmp/godot-android-export.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Shader compilation failed|Failed to compile shader|ERROR:" /tmp/godot-android-export.log; then
+            echo "Godot reported errors during Android export."
+            exit 1
+          fi
+          test -s build/SpaceMinerGame-Android.apk
+          ls -lh build/SpaceMinerGame-Android.apk
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpaceMinerGame-Android-${{ github.sha }}
+          path: build/SpaceMinerGame-Android.apk
           if-no-files-found: error
           retention-days: 14
