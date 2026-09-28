@@ -96,6 +96,9 @@ var menu_panel: PanelContainer
 var menu_content: VBoxContainer
 var menu_open := false
 
+var laser_status_panel: PanelContainer
+var laser_status_rows: Array[Dictionary] = []
+
 var debug_hitboxes_visible := false
 var ship_debug_hitbox: MeshInstance3D
 var debug_laser_range_visible := false
@@ -459,6 +462,8 @@ func _build_ui() -> void:
     gear_button.pressed.connect(_open_menu)
     root.add_child(gear_button)
 
+    _build_mining_laser_status_panel(root)
+
     menu_dim = ColorRect.new()
     menu_dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
     menu_dim.color = SpaceMinerTheme.palette(AppSettings.is_dark_theme())["overlay"]
@@ -483,6 +488,109 @@ func _build_ui() -> void:
     menu_content = VBoxContainer.new()
     menu_content.add_theme_constant_override("separation", 12)
     margin.add_child(menu_content)
+
+
+func _build_mining_laser_status_panel(root: Control) -> void:
+    laser_status_rows.clear()
+
+    if mining_lasers.is_empty():
+        return
+
+    laser_status_panel = PanelContainer.new()
+    laser_status_panel.name = "MiningLaserStatus"
+    laser_status_panel.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+    laser_status_panel.offset_left = 14.0
+    laser_status_panel.offset_right = 154.0
+    laser_status_panel.offset_bottom = -14.0
+    laser_status_panel.offset_top = (
+        -14.0
+        - 12.0
+        - float(mining_lasers.size()) * 20.0
+    )
+    laser_status_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+    var panel_style := StyleBoxFlat.new()
+    panel_style.bg_color = Color(0.025, 0.04, 0.075, 0.84)
+    panel_style.border_color = Color(0.65, 0.72, 0.84, 0.32)
+    panel_style.set_border_width_all(1)
+    panel_style.set_corner_radius_all(10)
+    laser_status_panel.add_theme_stylebox_override("panel", panel_style)
+    root.add_child(laser_status_panel)
+
+    var margin := MarginContainer.new()
+    margin.add_theme_constant_override("margin_left", 7)
+    margin.add_theme_constant_override("margin_right", 7)
+    margin.add_theme_constant_override("margin_top", 5)
+    margin.add_theme_constant_override("margin_bottom", 5)
+    laser_status_panel.add_child(margin)
+
+    var rows := VBoxContainer.new()
+    rows.add_theme_constant_override("separation", 2)
+    margin.add_child(rows)
+
+    for laser_index in range(mining_lasers.size()):
+        var row := HBoxContainer.new()
+        row.custom_minimum_size = Vector2(122.0, 18.0)
+        row.add_theme_constant_override("separation", 6)
+        rows.add_child(row)
+
+        var dot := PanelContainer.new()
+        dot.custom_minimum_size = Vector2(10.0, 10.0)
+        dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+        dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        row.add_child(dot)
+
+        var message := Label.new()
+        message.custom_minimum_size = Vector2(102.0, 18.0)
+        message.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+        message.add_theme_font_size_override("font_size", 13)
+        message.text = "Out of Range"
+        row.add_child(message)
+
+        laser_status_rows.append({
+            "dot": dot,
+            "message": message,
+            "state": "",
+        })
+        _set_laser_status(laser_index, false, "Out of Range")
+
+
+func _laser_status_dot_style(is_ok: bool) -> StyleBoxFlat:
+    var style := StyleBoxFlat.new()
+    style.bg_color = (
+        Color(0.28, 0.92, 0.42, 1.0)
+        if is_ok
+        else Color(0.95, 0.24, 0.24, 1.0)
+    )
+    style.set_corner_radius_all(999)
+    return style
+
+
+func _set_laser_status(
+    laser_index: int,
+    is_ok: bool,
+    message_text: String
+) -> void:
+    if laser_index < 0 or laser_index >= laser_status_rows.size():
+        return
+
+    var row := laser_status_rows[laser_index]
+    var state_key := ("ok" if is_ok else "error") + ":" + message_text
+    if str(row.get("state", "")) == state_key:
+        return
+
+    var dot := row.get("dot", null) as PanelContainer
+    var message := row.get("message", null) as Label
+    if dot == null or message == null:
+        return
+
+    dot.add_theme_stylebox_override(
+        "panel",
+        _laser_status_dot_style(is_ok)
+    )
+    message.text = "" if is_ok else message_text
+    row["state"] = state_key
+    laser_status_rows[laser_index] = row
 
 
 func _is_mobile_platform() -> bool:
@@ -1456,14 +1564,21 @@ func _update_mining_lasers(delta: float) -> void:
 
     for laser_index in range(mining_lasers.size()):
         var laser := mining_lasers[laser_index]
-        var pivot := laser["pivot"] as Node3D
-        var beam := laser["beam"] as MultiMeshInstance3D
+        var pivot := laser.get("pivot", null) as Node3D
+        var beam := laser.get("beam", null) as MultiMeshInstance3D
         var chunk = laser.get("chunk", null)
 
-        if pivot == null or not is_instance_valid(pivot):
+        if (
+            pivot == null
+            or not is_instance_valid(pivot)
+            or beam == null
+            or not is_instance_valid(beam)
+        ):
+            _set_laser_status(laser_index, false, "Error")
             continue
 
         if chunk != null and is_instance_valid(chunk):
+            _set_laser_status(laser_index, true, "")
             var chunk_node := chunk as Node3D
             var target_position := chunk_node.global_position
             _track_laser_pivot(pivot, target_position, delta)
@@ -1483,6 +1598,7 @@ func _update_mining_lasers(delta: float) -> void:
             laser["fire_time"] = 0.0
 
         if target == null or not is_instance_valid(target):
+            _set_laser_status(laser_index, false, "Out of Range")
             _track_laser_pivot_to_rest(pivot, delta)
             beam.visible = false
             laser["fire_time"] = 0.0
@@ -1490,6 +1606,13 @@ func _update_mining_lasers(delta: float) -> void:
             continue
 
         var asteroid := target as SpaceAsteroid
+        if asteroid == null:
+            _set_laser_status(laser_index, false, "Error")
+            beam.visible = false
+            laser["fire_time"] = 0.0
+            mining_lasers[laser_index] = laser
+            continue
+
         var target_position := asteroid.global_position
         _track_laser_pivot(pivot, target_position, delta)
 
@@ -1506,29 +1629,36 @@ func _update_mining_lasers(delta: float) -> void:
             laser["anchor_cell"] as Vector3i
         )
 
-        if aligned and not blocked:
-            beam.visible = true
-            _update_beam_particles(beam, muzzle, target_position)
-            laser["fire_time"] = float(laser["fire_time"]) + delta
-
-            if float(laser["fire_time"]) >= LASER_MINING_SECONDS:
-                var detached := asteroid.detach_closest_cell(muzzle)
-                laser["fire_time"] = 0.0
-                if not detached.is_empty():
-                    var chunk_node := _create_tractor_chunk(
-                        detached["position"] as Vector3,
-                        detached["color"] as Color
-                    )
-                    laser["chunk"] = chunk_node
-                    tractor_chunks.append({
-                        "node": chunk_node,
-                        "laser_index": laser_index,
-                        "speed": TRACTOR_START_SPEED,
-                        "color": detached["color"],
-                    })
-        else:
+        if blocked:
+            _set_laser_status(laser_index, false, "Obstructed")
             beam.visible = false
             laser["fire_time"] = 0.0
+        else:
+            _set_laser_status(laser_index, true, "")
+
+            if aligned:
+                beam.visible = true
+                _update_beam_particles(beam, muzzle, target_position)
+                laser["fire_time"] = float(laser["fire_time"]) + delta
+
+                if float(laser["fire_time"]) >= LASER_MINING_SECONDS:
+                    var detached := asteroid.detach_closest_cell(muzzle)
+                    laser["fire_time"] = 0.0
+                    if not detached.is_empty():
+                        var chunk_node := _create_tractor_chunk(
+                            detached["position"] as Vector3,
+                            detached["color"] as Color
+                        )
+                        laser["chunk"] = chunk_node
+                        tractor_chunks.append({
+                            "node": chunk_node,
+                            "laser_index": laser_index,
+                            "speed": TRACTOR_START_SPEED,
+                            "color": detached["color"],
+                        })
+            else:
+                beam.visible = false
+                laser["fire_time"] = 0.0
 
         mining_lasers[laser_index] = laser
 
