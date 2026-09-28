@@ -656,8 +656,8 @@ func _spawn_asteroid(
 ) -> void:
     var asteroid := SpaceAsteroid.new()
     asteroid.name = "Asteroid_" + key.replace(":", "_")
-    asteroid.configure(key, world_position, seed_value)
     asteroid_root.add_child(asteroid)
+    asteroid.configure(key, world_position, seed_value)
     asteroids[key] = asteroid
 
 
@@ -1000,8 +1000,8 @@ func _create_tractor_chunk(position: Vector3, color: Color) -> Node3D:
 
     node.mesh = cube
     node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-    node.global_position = position
     effects_root.add_child(node)
+    node.global_position = position
     return node
 
 
@@ -1049,7 +1049,6 @@ func _update_tractor_chunks(delta: float) -> void:
 
 func _spawn_collection_burst(position: Vector3, color: Color) -> void:
     var particles := GPUParticles3D.new()
-    particles.global_position = position
     particles.amount = 28
     particles.lifetime = 0.65
     particles.one_shot = true
@@ -1074,6 +1073,7 @@ func _spawn_collection_burst(position: Vector3, color: Color) -> void:
     particles.draw_pass_1 = cube
 
     effects_root.add_child(particles)
+    particles.global_position = position
 
     var timer := get_tree().create_timer(1.0)
     timer.timeout.connect(particles.queue_free, CONNECT_ONE_SHOT)

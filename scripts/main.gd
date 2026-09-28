@@ -144,8 +144,12 @@ func _launch_simulation_smoke_if_requested() -> bool:
         ],
     })
     ShipStore.request_view("simulation", smoke_ship_id)
-    get_tree().change_scene_to_file("res://simulation.tscn")
+    call_deferred("_change_scene_deferred", "res://simulation.tscn")
     return true
+
+
+func _change_scene_deferred(path: String) -> void:
+    get_tree().change_scene_to_file(path)
 
 
 func _notification(what: int) -> void:
