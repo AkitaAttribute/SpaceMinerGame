@@ -98,6 +98,8 @@ var menu_open := false
 
 var debug_hitboxes_visible := false
 var ship_debug_hitbox: MeshInstance3D
+var debug_laser_range_visible := false
+var laser_range_debug_root: Node3D
 
 var mobile_joystick: VirtualJoystick
 var mobile_last_turn_sign := 1.0
@@ -319,6 +321,7 @@ func _instantiate_ship_part(record: Dictionary) -> void:
                 "fire_time": 0.0,
                 "beam": beam,
             })
+            _rebuild_laser_range_debug()
 
 
 func _colors_from_entry(entry: Dictionary, part_index: int) -> Array[Color]:
@@ -631,8 +634,14 @@ func _show_flight_debug_menu() -> void:
     hitboxes.toggled.connect(_set_debug_hitboxes_visible)
     menu_content.add_child(hitboxes)
 
+    var laser_range := CheckButton.new()
+    laser_range.text = "Show mining laser range"
+    laser_range.button_pressed = debug_laser_range_visible
+    laser_range.toggled.connect(_set_debug_laser_range_visible)
+    menu_content.add_child(laser_range)
+
     var note := Label.new()
-    note.text = "Draws outlines around the exact physics collision shapes used by the ship and asteroids."
+    note.text = "Hitboxes show exact physics collision shapes. Laser range shows the 40-cell activation boundary measured from each laser's 1x1x1 builder cell."
     note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     note.modulate.a = 0.76
     menu_content.add_child(note)
@@ -665,6 +674,115 @@ func _flight_menu_action(action: String) -> void:
                 Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
             ShipStore.request_view("selector")
             get_tree().change_scene_to_file("res://main.tscn")
+
+
+func _set_debug_laser_range_visible(value: bool) -> void:
+    debug_laser_range_visible = value
+    _rebuild_laser_range_debug()
+
+
+func _rebuild_laser_range_debug() -> void:
+    if (
+        laser_range_debug_root != null
+        and is_instance_valid(laser_range_debug_root)
+    ):
+        laser_range_debug_root.queue_free()
+        laser_range_debug_root = null
+
+    if not debug_laser_range_visible:
+        return
+    if ship_visual_root == null or not is_instance_valid(ship_visual_root):
+        return
+
+    laser_range_debug_root = Node3D.new()
+    laser_range_debug_root.name = "DebugMiningLaserRanges"
+    ship_visual_root.add_child(laser_range_debug_root)
+
+    var material := StandardMaterial3D.new()
+    material.albedo_color = Color(0.32, 1.0, 0.52, 1.0)
+    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    material.no_depth_test = true
+
+    var range_mesh := _make_laser_range_outline(material)
+
+    for laser in mining_lasers:
+        var anchor := laser.get("anchor_cell", Vector3i.ZERO) as Vector3i
+        var instance := MeshInstance3D.new()
+        instance.name = "LaserRange_%d_%d_%d" % [
+            anchor.x,
+            anchor.y,
+            anchor.z,
+        ]
+        instance.mesh = range_mesh
+        instance.position = _cell_world_center(anchor) - model_center
+        instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+        laser_range_debug_root.add_child(instance)
+
+
+func _make_laser_range_outline(material: Material) -> ImmediateMesh:
+    # The activation test measures from the edge of the laser's 1x1x1 cell,
+    # not from its center. These three orthogonal rings therefore trace the
+    # exact LASER_RANGE offset from that cube in their respective cross-sections
+    # rather than drawing a simple center-radius sphere.
+    const SEGMENTS := 128
+    var mesh := ImmediateMesh.new()
+    mesh.surface_begin(Mesh.PRIMITIVE_LINES, material)
+
+    for plane in range(3):
+        var previous := Vector3.ZERO
+        var first := Vector3.ZERO
+
+        for index in range(SEGMENTS + 1):
+            var angle := TAU * float(index % SEGMENTS) / float(SEGMENTS)
+            var direction := Vector3.ZERO
+
+            match plane:
+                0:
+                    direction = Vector3(cos(angle), 0.0, sin(angle))
+                1:
+                    direction = Vector3(cos(angle), sin(angle), 0.0)
+                _:
+                    direction = Vector3(0.0, cos(angle), sin(angle))
+
+            var point := _laser_range_boundary_point(direction)
+
+            if index == 0:
+                first = point
+            else:
+                mesh.surface_add_vertex(previous)
+                mesh.surface_add_vertex(point)
+
+            previous = point
+
+        mesh.surface_add_vertex(previous)
+        mesh.surface_add_vertex(first)
+
+    mesh.surface_end()
+    return mesh
+
+
+func _laser_range_boundary_point(direction: Vector3) -> Vector3:
+    var unit := direction.normalized()
+    var low := 0.0
+    var high := LASER_RANGE + 1.0
+    var half_cell := 0.5
+
+    # Solve distance(point, 1x1x1 cell) == LASER_RANGE along this ray.
+    # 24 iterations is far more precise than the rendered line thickness.
+    for _iteration in range(24):
+        var distance_from_center := (low + high) * 0.5
+        var point := unit * distance_from_center
+        var dx := maxf(absf(point.x) - half_cell, 0.0)
+        var dy := maxf(absf(point.y) - half_cell, 0.0)
+        var dz := maxf(absf(point.z) - half_cell, 0.0)
+        var distance_from_cell := sqrt(dx * dx + dy * dy + dz * dz)
+
+        if distance_from_cell < LASER_RANGE:
+            low = distance_from_center
+        else:
+            high = distance_from_center
+
+    return unit * ((low + high) * 0.5)
 
 
 func _set_debug_hitboxes_visible(value: bool) -> void:
