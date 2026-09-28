@@ -937,8 +937,17 @@ func _update_collision_recovery(delta: float) -> void:
 
     if turn_progress >= 1.0 and position_clear:
         ship_body.rotation.y = collision_recovery_target_yaw
-        ship_body.velocity = collision_recovery_saved_velocity
+
+        # Restore the pre-impact momentum magnitude, but redirect it along the
+        # ship's new forward heading after the avoidance turn. This prevents
+        # the ship from immediately drifting back along its old collision path.
+        var restored_speed := collision_recovery_saved_velocity.length()
+        var restored_forward := _ship_forward_world()
+        ship_body.velocity = restored_forward * restored_speed
         ship_body.velocity.y = 0.0
+        surge_speed = restored_speed
+        sway_speed = 0.0
+
         collision_recovery_saved_velocity = Vector3.ZERO
         collision_recovery_active = false
         collision_recovery_elapsed = 0.0
