@@ -96,6 +96,9 @@ var menu_panel: PanelContainer
 var menu_content: VBoxContainer
 var menu_open := false
 
+var debug_hitboxes_visible := false
+var ship_debug_hitbox: MeshInstance3D
+
 var mobile_joystick: VirtualJoystick
 var mobile_last_turn_sign := 1.0
 
@@ -238,6 +241,7 @@ func _load_ship() -> void:
     var collision_shape := BoxShape3D.new()
     collision_shape.size = collision_size
     ship_collision.shape = collision_shape
+    _rebuild_ship_debug_hitbox()
 
     model_radius = maxf(
         1.5,
@@ -553,6 +557,7 @@ func _open_menu() -> void:
     for spec in [
         ["Resume", "resume"],
         ["Controls", "controls"],
+        ["Debug", "debug"],
         ["Return to Builder", "builder"],
         ["Exit to Ship Selector", "selector"],
     ]:
@@ -600,6 +605,39 @@ func _show_flight_controls_menu() -> void:
     menu_content.add_child(invert_vertical)
 
 
+func _show_flight_debug_menu() -> void:
+    for child in menu_content.get_children():
+        child.queue_free()
+
+    var header := HBoxContainer.new()
+    header.add_theme_constant_override("separation", 10)
+    menu_content.add_child(header)
+
+    var back := Button.new()
+    back.text = "← Back"
+    back.pressed.connect(_open_menu)
+    header.add_child(back)
+
+    var title := Label.new()
+    title.text = "Debug"
+    title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    title.add_theme_font_size_override("font_size", 26)
+    header.add_child(title)
+
+    var hitboxes := CheckButton.new()
+    hitboxes.text = "Show collision hitboxes"
+    hitboxes.button_pressed = debug_hitboxes_visible
+    hitboxes.toggled.connect(_set_debug_hitboxes_visible)
+    menu_content.add_child(hitboxes)
+
+    var note := Label.new()
+    note.text = "Displays the exact physics collision shapes used by the ship and asteroids."
+    note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    note.modulate.a = 0.76
+    menu_content.add_child(note)
+
+
 func _close_menu() -> void:
     menu_open = false
     menu_dim.visible = false
@@ -615,6 +653,8 @@ func _flight_menu_action(action: String) -> void:
             _close_menu()
         "controls":
             _show_flight_controls_menu()
+        "debug":
+            _show_flight_debug_menu()
         "builder":
             if not _is_mobile_platform():
                 Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
@@ -625,6 +665,47 @@ func _flight_menu_action(action: String) -> void:
                 Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
             ShipStore.request_view("selector")
             get_tree().change_scene_to_file("res://main.tscn")
+
+
+func _set_debug_hitboxes_visible(value: bool) -> void:
+    debug_hitboxes_visible = value
+    _rebuild_ship_debug_hitbox()
+
+    for asteroid in asteroids.values():
+        if asteroid != null and is_instance_valid(asteroid):
+            (asteroid as SpaceAsteroid).set_debug_hitboxes_visible(value)
+
+
+func _rebuild_ship_debug_hitbox() -> void:
+    if ship_debug_hitbox != null and is_instance_valid(ship_debug_hitbox):
+        ship_debug_hitbox.queue_free()
+        ship_debug_hitbox = null
+
+    if not debug_hitboxes_visible:
+        return
+    if ship_collision == null or ship_collision.shape == null:
+        return
+    if not (ship_collision.shape is BoxShape3D):
+        return
+
+    var collision_box := ship_collision.shape as BoxShape3D
+    var mesh := BoxMesh.new()
+    mesh.size = collision_box.size
+
+    var material := StandardMaterial3D.new()
+    material.albedo_color = Color(0.15, 0.75, 1.0, 0.18)
+    material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    material.no_depth_test = true
+    material.cull_mode = BaseMaterial3D.CULL_DISABLED
+    mesh.material = material
+
+    ship_debug_hitbox = MeshInstance3D.new()
+    ship_debug_hitbox.name = "DebugShipHitbox"
+    ship_debug_hitbox.mesh = mesh
+    ship_debug_hitbox.position = ship_collision.position
+    ship_debug_hitbox.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    ship_body.add_child(ship_debug_hitbox)
 
 
 func _notification(what: int) -> void:
@@ -1218,6 +1299,7 @@ func _spawn_asteroid(
     asteroid.name = "Asteroid_" + key.replace(":", "_")
     asteroid.configure(key, world_position, seed_value)
     asteroid_root.add_child(asteroid)
+    asteroid.set_debug_hitboxes_visible(debug_hitboxes_visible)
     asteroids[key] = asteroid
 
 
