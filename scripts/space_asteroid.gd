@@ -84,7 +84,32 @@ func closest_cell_world(from_world: Vector3) -> Vector3:
 
 
 func distance_to_surface(from_world: Vector3) -> float:
-    return from_world.distance_to(closest_cell_world(from_world))
+    if _surface_cells.is_empty():
+        return INF
+
+    # Measure to the actual exterior of the asteroid's voxel surface, not to
+    # the asteroid center and not to the center of the nearest surface cell.
+    # Transform into asteroid-local space so the randomized body rotation does
+    # not complicate the box-distance calculation.
+    var local_from := to_local(from_world)
+    var best_distance_squared := INF
+    var half_cell := Vector3.ONE * (CELL_SIZE * 0.5)
+
+    for cell in _surface_cells:
+        var center := _cell_center(cell)
+        var minimum := center - half_cell
+        var maximum := center + half_cell
+        var closest := Vector3(
+            clampf(local_from.x, minimum.x, maximum.x),
+            clampf(local_from.y, minimum.y, maximum.y),
+            clampf(local_from.z, minimum.z, maximum.z)
+        )
+        best_distance_squared = minf(
+            best_distance_squared,
+            local_from.distance_squared_to(closest)
+        )
+
+    return sqrt(best_distance_squared)
 
 
 func detach_closest_cell(from_world: Vector3) -> Dictionary:
