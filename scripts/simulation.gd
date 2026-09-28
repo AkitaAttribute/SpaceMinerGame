@@ -626,13 +626,13 @@ func _show_flight_debug_menu() -> void:
     header.add_child(title)
 
     var hitboxes := CheckButton.new()
-    hitboxes.text = "Show collision hitboxes"
+    hitboxes.text = "Show hitbox outlines"
     hitboxes.button_pressed = debug_hitboxes_visible
     hitboxes.toggled.connect(_set_debug_hitboxes_visible)
     menu_content.add_child(hitboxes)
 
     var note := Label.new()
-    note.text = "Displays the exact physics collision shapes used by the ship and asteroids."
+    note.text = "Draws outlines around the exact physics collision shapes used by the ship and asteroids."
     note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     note.modulate.a = 0.76
     menu_content.add_child(note)
@@ -689,23 +689,53 @@ func _rebuild_ship_debug_hitbox() -> void:
         return
 
     var collision_box := ship_collision.shape as BoxShape3D
-    var mesh := BoxMesh.new()
-    mesh.size = collision_box.size
-
     var material := StandardMaterial3D.new()
-    material.albedo_color = Color(0.15, 0.75, 1.0, 0.18)
-    material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+    material.albedo_color = Color(0.15, 0.75, 1.0, 1.0)
     material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
     material.no_depth_test = true
-    material.cull_mode = BaseMaterial3D.CULL_DISABLED
-    mesh.material = material
 
     ship_debug_hitbox = MeshInstance3D.new()
     ship_debug_hitbox.name = "DebugShipHitbox"
-    ship_debug_hitbox.mesh = mesh
+    ship_debug_hitbox.mesh = _make_debug_box_outline(
+        collision_box.size,
+        material
+    )
     ship_debug_hitbox.position = ship_collision.position
     ship_debug_hitbox.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     ship_body.add_child(ship_debug_hitbox)
+
+
+func _make_debug_box_outline(
+    size: Vector3,
+    material: Material
+) -> ImmediateMesh:
+    var half := size * 0.5
+    var corners: Array[Vector3] = [
+        Vector3(-half.x, -half.y, -half.z),
+        Vector3(half.x, -half.y, -half.z),
+        Vector3(half.x, half.y, -half.z),
+        Vector3(-half.x, half.y, -half.z),
+        Vector3(-half.x, -half.y, half.z),
+        Vector3(half.x, -half.y, half.z),
+        Vector3(half.x, half.y, half.z),
+        Vector3(-half.x, half.y, half.z),
+    ]
+    var edges := [
+        Vector2i(0, 1), Vector2i(1, 2),
+        Vector2i(2, 3), Vector2i(3, 0),
+        Vector2i(4, 5), Vector2i(5, 6),
+        Vector2i(6, 7), Vector2i(7, 4),
+        Vector2i(0, 4), Vector2i(1, 5),
+        Vector2i(2, 6), Vector2i(3, 7),
+    ]
+
+    var mesh := ImmediateMesh.new()
+    mesh.surface_begin(Mesh.PRIMITIVE_LINES, material)
+    for edge in edges:
+        mesh.surface_add_vertex(corners[edge.x])
+        mesh.surface_add_vertex(corners[edge.y])
+    mesh.surface_end()
+    return mesh
 
 
 func _notification(what: int) -> void:
