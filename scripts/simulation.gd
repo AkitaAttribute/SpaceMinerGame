@@ -14,8 +14,8 @@ const LATERAL_DRAG := 2.8
 const RUDDER_GAIN := 0.032
 const YAW_DAMPING := 1.7
 const MAX_YAW_RATE := deg_to_rad(58.0)
-const COLLISION_RECOVERY_DURATION := 0.45
-const COLLISION_RECOVERY_PUSH_DISTANCE := 1.0
+const COLLISION_RECOVERY_DURATION := 1.35
+const COLLISION_RECOVERY_PUSH_DISTANCE := 5.0
 const COLLISION_RECOVERY_TURN := PI * 0.5
 
 const MAX_HEEL := deg_to_rad(11.0)
@@ -77,6 +77,7 @@ var collision_recovery_start_yaw := 0.0
 var collision_recovery_target_yaw := 0.0
 var collision_recovery_normal := Vector3.ZERO
 var collision_recovery_velocity := Vector3.ZERO
+var collision_recovery_push_remaining := 0.0
 var asteroid_update_time := 0.0
 var asteroid_spawn_sequence := 0
 var beam_time := 0.0
@@ -791,6 +792,7 @@ func _begin_collision_recovery(
     collision_recovery_normal = away_normal
     collision_recovery_velocity = preserved_velocity
     collision_recovery_velocity.y = 0.0
+    collision_recovery_push_remaining = COLLISION_RECOVERY_PUSH_DISTANCE
 
     collision_recovery_start_yaw = ship_body.rotation.y
 
@@ -818,6 +820,9 @@ func _begin_collision_recovery(
 
 
 func _update_collision_recovery(delta: float) -> void:
+    # While recovery is active, additional asteroid contacts are deliberately
+    # ignored. One collision can cause only one 90-degree avoidance turn until
+    # the full five-cell separation has actually been applied.
     var remaining_time := maxf(
         0.0001,
         COLLISION_RECOVERY_DURATION - collision_recovery_elapsed
@@ -832,15 +837,24 @@ func _update_collision_recovery(delta: float) -> void:
     ship_body.velocity = collision_recovery_velocity
     ship_body.velocity.y = 0.0
 
-    # Apply exactly one builder-cell of separation over the recovery interval.
-    # This is positional correction, not a velocity impulse.
-    var push_fraction := frame_time / COLLISION_RECOVERY_DURATION
-    ship_body.global_position += (
-        collision_recovery_normal
-        * COLLISION_RECOVERY_PUSH_DISTANCE
-        * push_fraction
+    # Apply the five-cell separation as positional correction. Track the actual
+    # remaining correction so recovery cannot finish (or retrigger another
+    # turn) until the complete requested distance has been applied.
+    var requested_push := (
+        COLLISION_RECOVERY_PUSH_DISTANCE
+        * frame_time
+        / COLLISION_RECOVERY_DURATION
     )
+    var applied_push := minf(
+        collision_recovery_push_remaining,
+        requested_push
+    )
+    ship_body.global_position += collision_recovery_normal * applied_push
     ship_body.global_position.y = 0.0
+    collision_recovery_push_remaining = maxf(
+        0.0,
+        collision_recovery_push_remaining - applied_push
+    )
 
     collision_recovery_elapsed += frame_time
     var progress := clampf(
@@ -862,11 +876,15 @@ func _update_collision_recovery(delta: float) -> void:
 
     _set_thruster_emission(collision_recovery_velocity.length_squared() > 0.01)
 
-    if collision_recovery_elapsed >= COLLISION_RECOVERY_DURATION:
+    if (
+        collision_recovery_elapsed >= COLLISION_RECOVERY_DURATION
+        and collision_recovery_push_remaining <= 0.0001
+    ):
         ship_body.rotation.y = collision_recovery_target_yaw
         ship_body.velocity = collision_recovery_velocity
         collision_recovery_active = false
         collision_recovery_elapsed = 0.0
+        collision_recovery_push_remaining = 0.0
         yaw_rate = 0.0
 
 
