@@ -8,6 +8,12 @@ const LASER_BARREL_LENGTH := 0.42
 const LASER_PREPARE_SECONDS := 0.40
 const LASER_SURFACE_TRANSITION_SECONDS := 1.50
 
+const AUTO_ORBIT_MIN_CLEARANCE := 8.0
+const AUTO_ORBIT_TARGET_LASER_DISTANCE := 20.0
+const AUTO_ORBIT_RANGE_MARGIN := 7.0
+const AUTO_ORBIT_RADIAL_BAND := 10.0
+const AUTO_ORBIT_BASE_THROTTLE := 0.72
+
 const MAX_FORWARD_SPEED := 8.0
 const MAX_REVERSE_SPEED := 3.0
 const ENGINE_ACCELERATION := 4.8
@@ -64,6 +70,7 @@ var ship_cell_boxes: Array[Dictionary] = []
 
 var model_center := Vector3.ZERO
 var model_radius := 2.0
+var model_collision_radius := 2.0
 var ship_forward_local := Vector3.FORWARD
 var launch_position := Vector3.ZERO
 
@@ -101,6 +108,13 @@ var menu_open := false
 
 var laser_status_panel: PanelContainer
 var laser_status_rows: Array[Dictionary] = []
+
+var auto_orbit_enabled := false
+var auto_orbit_target: SpaceAsteroid
+var auto_orbit_direction := 1.0
+var auto_orbit_panel: PanelContainer
+var auto_orbit_off_indicator: PanelContainer
+var auto_orbit_on_indicator: PanelContainer
 
 var debug_hitboxes_visible := false
 var ship_debug_hitbox: MeshInstance3D
@@ -255,6 +269,10 @@ func _load_ship() -> void:
     model_radius = maxf(
         1.5,
         maxf(collision_size.x, collision_size.z) * 0.5
+    )
+    model_collision_radius = maxf(
+        1.5,
+        Vector2(collision_size.x, collision_size.z).length() * 0.5
     )
 
     if thruster_count > 0:
@@ -468,6 +486,7 @@ func _build_ui() -> void:
     gear_button.pressed.connect(_open_menu)
     root.add_child(gear_button)
 
+    _build_auto_orbit_toggle(root)
     _build_mining_laser_status_panel(root)
 
     menu_dim = ColorRect.new()
@@ -494,6 +513,109 @@ func _build_ui() -> void:
     menu_content = VBoxContainer.new()
     menu_content.add_theme_constant_override("separation", 12)
     margin.add_child(menu_content)
+
+
+func _build_auto_orbit_toggle(root: Control) -> void:
+    auto_orbit_panel = PanelContainer.new()
+    auto_orbit_panel.name = "AutoOrbitToggle"
+    auto_orbit_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+    auto_orbit_panel.offset_left = -188.0
+    auto_orbit_panel.offset_top = 78.0
+    auto_orbit_panel.offset_right = -24.0
+    auto_orbit_panel.offset_bottom = 114.0
+
+    var panel_style := StyleBoxFlat.new()
+    panel_style.bg_color = Color(0.025, 0.04, 0.075, 0.88)
+    panel_style.border_color = Color(0.65, 0.72, 0.84, 0.30)
+    panel_style.set_border_width_all(1)
+    panel_style.set_corner_radius_all(12)
+    auto_orbit_panel.add_theme_stylebox_override("panel", panel_style)
+    root.add_child(auto_orbit_panel)
+
+    var margin := MarginContainer.new()
+    margin.add_theme_constant_override("margin_left", 9)
+    margin.add_theme_constant_override("margin_right", 9)
+    margin.add_theme_constant_override("margin_top", 7)
+    margin.add_theme_constant_override("margin_bottom", 7)
+    auto_orbit_panel.add_child(margin)
+
+    var row := HBoxContainer.new()
+    row.add_theme_constant_override("separation", 8)
+    margin.add_child(row)
+
+    auto_orbit_off_indicator = PanelContainer.new()
+    auto_orbit_off_indicator.custom_minimum_size = Vector2(18.0, 18.0)
+    row.add_child(auto_orbit_off_indicator)
+
+    var label := Label.new()
+    label.text = "Auto Pilot"
+    label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    label.add_theme_font_size_override("font_size", 14)
+    label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    row.add_child(label)
+
+    auto_orbit_on_indicator = PanelContainer.new()
+    auto_orbit_on_indicator.custom_minimum_size = Vector2(18.0, 18.0)
+    row.add_child(auto_orbit_on_indicator)
+
+    var click := Button.new()
+    click.name = "AutoOrbitButton"
+    click.flat = true
+    click.text = ""
+    click.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    click.pressed.connect(_toggle_auto_orbit)
+    auto_orbit_panel.add_child(click)
+
+    _refresh_auto_orbit_toggle()
+
+
+func _auto_orbit_indicator_style(color: Color) -> StyleBoxFlat:
+    var style := StyleBoxFlat.new()
+    style.bg_color = color
+    style.border_color = Color(1.0, 1.0, 1.0, 0.16)
+    style.set_border_width_all(1)
+    style.set_corner_radius_all(6)
+    return style
+
+
+func _refresh_auto_orbit_toggle() -> void:
+    if auto_orbit_off_indicator == null or auto_orbit_on_indicator == null:
+        return
+
+    var inactive := Color(0.34, 0.37, 0.43, 0.92)
+    var off_color := (
+        inactive
+        if auto_orbit_enabled
+        else Color(0.86, 0.22, 0.22, 1.0)
+    )
+    var on_color := (
+        Color(0.20, 0.82, 0.36, 1.0)
+        if auto_orbit_enabled
+        else inactive
+    )
+
+    auto_orbit_off_indicator.add_theme_stylebox_override(
+        "panel",
+        _auto_orbit_indicator_style(off_color)
+    )
+    auto_orbit_on_indicator.add_theme_stylebox_override(
+        "panel",
+        _auto_orbit_indicator_style(on_color)
+    )
+
+
+func _toggle_auto_orbit() -> void:
+    auto_orbit_enabled = not auto_orbit_enabled
+
+    if auto_orbit_enabled:
+        _acquire_auto_orbit_target()
+    else:
+        auto_orbit_target = null
+        yaw_rate = 0.0
+
+    _refresh_auto_orbit_toggle()
 
 
 func _build_mining_laser_status_panel(root: Control) -> void:
@@ -1005,7 +1127,11 @@ func _update_ship_motion(delta: float) -> void:
     var right := forward.cross(Vector3.UP).normalized()
     var current_forward_speed := ship_body.velocity.dot(forward)
 
-    if _is_mobile_platform():
+    if auto_orbit_enabled:
+        var auto_input := _auto_orbit_input(forward)
+        steer = auto_input.x
+        throttle = auto_input.y
+    elif _is_mobile_platform():
         var mobile_input := _mobile_flight_input()
         steer = mobile_input.x
         throttle = mobile_input.y
@@ -1060,7 +1186,9 @@ func _update_ship_motion(delta: float) -> void:
 
     var steering_speed := maxf(absf(surge_speed), 0.35)
     var direction_sign := signf(surge_speed)
-    if not _is_mobile_platform():
+    if auto_orbit_enabled:
+        direction_sign = 1.0
+    elif not _is_mobile_platform():
         # Desktop steering mode is input-driven, not momentum-driven. Reverse
         # steering exists only while S is held, so releasing S cannot leave
         # A/D latched in reverse while the old reverse velocity bleeds off.
@@ -1300,6 +1428,189 @@ func _update_collision_recovery(delta: float) -> void:
         collision_recovery_safe_radius = 0.0
         collision_recovery_asteroid = null
         yaw_rate = 0.0
+
+
+func _acquire_auto_orbit_target() -> void:
+    var best: SpaceAsteroid = null
+    var best_distance := INF
+
+    for value in asteroids.values():
+        if value == null or not is_instance_valid(value):
+            continue
+
+        var asteroid := value as SpaceAsteroid
+        if not asteroid.has_cells():
+            continue
+
+        var distance := ship_body.global_position.distance_squared_to(
+            asteroid.global_position
+        )
+        if distance < best_distance:
+            best_distance = distance
+            best = asteroid
+
+    auto_orbit_target = best
+
+    if auto_orbit_target == null:
+        return
+
+    var radial := (
+        ship_body.global_position
+        - auto_orbit_target.global_position
+    )
+    radial.y = 0.0
+    if radial.length_squared() < 0.001:
+        radial = -_ship_forward_world()
+    radial = radial.normalized()
+
+    var tangent := Vector3.UP.cross(radial).normalized()
+    var forward := _ship_forward_world()
+    auto_orbit_direction = (
+        1.0
+        if forward.dot(tangent) >= forward.dot(-tangent)
+        else -1.0
+    )
+
+
+func _auto_orbit_input(forward: Vector3) -> Vector2:
+    if (
+        auto_orbit_target == null
+        or not is_instance_valid(auto_orbit_target)
+        or not auto_orbit_target.has_cells()
+    ):
+        _acquire_auto_orbit_target()
+
+    if auto_orbit_target == null:
+        return Vector2.ZERO
+
+    var radial := (
+        ship_body.global_position
+        - auto_orbit_target.global_position
+    )
+    radial.y = 0.0
+    var center_distance := radial.length()
+    if center_distance < 0.001:
+        radial = -forward
+        center_distance = 0.001
+    else:
+        radial /= center_distance
+
+    var tangent := (
+        Vector3.UP.cross(radial).normalized()
+        * auto_orbit_direction
+    )
+
+    # Conservative center-radius clearance: ASTEROID_HALF_DIAGONAL encloses
+    # the rotating 20^3 asteroid and model_collision_radius encloses the ship's
+    # rectangular collision box through any yaw angle.
+    var clearance := (
+        center_distance
+        - ASTEROID_HALF_DIAGONAL
+        - model_collision_radius
+    )
+
+    var laser_distance := _auto_orbit_worst_laser_distance(
+        auto_orbit_target
+    )
+
+    var radial_strength := 0.0
+    if laser_distance < INF:
+        radial_strength = clampf(
+            (
+                AUTO_ORBIT_TARGET_LASER_DISTANCE
+                - laser_distance
+            ) / AUTO_ORBIT_RADIAL_BAND,
+            -0.85,
+            0.85
+        )
+
+    # When outside the useful mining band, prioritize closing distance over
+    # orbiting. When inside the collision buffer, prioritize escape.
+    if (
+        laser_distance < INF
+        and laser_distance > LASER_RANGE - AUTO_ORBIT_RANGE_MARGIN
+    ):
+        radial_strength = -1.55
+
+    if clearance < AUTO_ORBIT_MIN_CLEARANCE:
+        radial_strength = 1.8
+
+    var radial_speed := ship_body.velocity.dot(radial)
+    if (
+        clearance < AUTO_ORBIT_MIN_CLEARANCE + 6.0
+        and radial_speed < 0.0
+    ):
+        radial_strength += clampf(
+            -radial_speed / 4.0,
+            0.0,
+            1.0
+        )
+
+    var desired := (
+        tangent + radial * radial_strength
+    ).normalized()
+
+    if (
+        laser_distance < INF
+        and laser_distance > LASER_RANGE + 8.0
+    ):
+        desired = (
+            -radial * 1.5 + tangent * 0.30
+        ).normalized()
+    elif clearance < AUTO_ORBIT_MIN_CLEARANCE:
+        desired = (
+            radial * 1.7 + tangent * 0.25
+        ).normalized()
+
+    var heading_error := atan2(
+        forward.cross(desired).y,
+        forward.dot(desired)
+    )
+    var steer := clampf(
+        -heading_error / deg_to_rad(48.0),
+        -1.0,
+        1.0
+    )
+
+    var throttle := AUTO_ORBIT_BASE_THROTTLE
+    if absf(heading_error) > deg_to_rad(95.0):
+        throttle = 0.22
+    elif absf(heading_error) > deg_to_rad(60.0):
+        throttle = 0.42
+
+    # Inside the safety buffer, do not keep feeding forward velocity toward
+    # the asteroid while the hull is still rotating away.
+    if (
+        clearance < AUTO_ORBIT_MIN_CLEARANCE + 2.0
+        and radial_speed < 0.0
+        and forward.dot(radial) < 0.15
+    ):
+        throttle = 0.0
+
+    return Vector2(steer, throttle)
+
+
+func _auto_orbit_worst_laser_distance(
+    asteroid: SpaceAsteroid
+) -> float:
+    if mining_lasers.is_empty():
+        return INF
+
+    var worst := 0.0
+    var found := false
+
+    for laser in mining_lasers:
+        var pivot = laser.get("pivot", null)
+        if pivot == null or not is_instance_valid(pivot):
+            continue
+
+        worst = maxf(
+            worst,
+            _laser_cell_hitbox_distance(laser, asteroid)
+        )
+        found = true
+
+    return worst if found else INF
 
 
 func _update_camera(delta: float) -> void:
