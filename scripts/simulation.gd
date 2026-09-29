@@ -50,6 +50,7 @@ const RING_SLOT_JITTER := 0.18
 const RING_LINEAR_SPEED := 1.20
 const FAR_RING_UPDATE_INTERVAL := 0.20
 const MIN_ASTEROID_DETAIL_DISTANCE := 250.0
+const ASTEROID_PHYSICS_ACTIVE_DISTANCE := 280.0
 
 const CAMERA_MOUSE_SENSITIVITY := 0.0026
 const CAMERA_TOUCH_SENSITIVITY := 0.0042
@@ -70,9 +71,6 @@ var camera: Camera3D
 var asteroid_root: Node3D
 var effects_root: Node3D
 var planet: MeshInstance3D
-var far_ring_root: Node3D
-var far_ring_multimeshes: Dictionary = {}
-var far_ring_slots: Dictionary = {}
 var asteroids: Dictionary = {}
 var mining_lasers: Array[Dictionary] = []
 var thruster_particles: Array[GPUParticles3D] = []
@@ -1868,46 +1866,55 @@ func _spawn_initial_asteroids() -> void:
     # Build the complete ring once. Every asteroid remains present and keeps
     # orbiting, including bodies on the far side of the planet.
     _populate_full_asteroid_ring()
-    _build_far_ring_renderer()
-    _refresh_asteroid_render_lod(true)
 
 
 func _update_asteroids(delta: float) -> void:
     var detail_distance := _asteroid_detail_distance()
+
+    # Every asteroid keeps its real world-space model. Near asteroids update
+    # orbital motion and gentle spin every frame. Far asteroids keep advancing
+    # analytically, but only push their orbital transform at the slower LOD
+    # cadence and do not spend per-frame work on cosmetic rotation.
+    for asteroid_value in asteroids.values():
+        if asteroid_value == null or not is_instance_valid(asteroid_value):
+            continue
+
+        var asteroid := asteroid_value as SpaceAsteroid
+        var distance := ship_body.global_position.distance_to(
+            asteroid.global_position
+        )
+        asteroid.update_simulation(
+            delta,
+            distance <= detail_distance
+        )
+
+    asteroid_render_update_time += delta
+    if asteroid_render_update_time < FAR_RING_UPDATE_INTERVAL:
+        return
+
+    asteroid_render_update_time = fmod(
+        asteroid_render_update_time,
+        FAR_RING_UPDATE_INTERVAL
+    )
 
     for asteroid_value in asteroids.values():
         if asteroid_value == null or not is_instance_valid(asteroid_value):
             continue
 
         var asteroid := asteroid_value as SpaceAsteroid
-        var high_detail := (
-            ship_body.global_position.distance_to(asteroid.global_position)
-            <= detail_distance
-        )
-        asteroid.update_simulation(delta, high_detail)
-
-    asteroid_render_update_time += delta
-    if asteroid_render_update_time >= FAR_RING_UPDATE_INTERVAL:
-        asteroid_render_update_time = fmod(
-            asteroid_render_update_time,
-            FAR_RING_UPDATE_INTERVAL
+        var distance := ship_body.global_position.distance_to(
+            asteroid.global_position
         )
 
-        # Far bodies advance their orbital angle continuously but only push a
-        # transform to the scene/physics tree at this slower cadence.
-        for asteroid_value in asteroids.values():
-            if asteroid_value == null or not is_instance_valid(asteroid_value):
-                continue
+        if distance > detail_distance:
+            asteroid.sync_orbit_position()
 
-            var asteroid := asteroid_value as SpaceAsteroid
-            if (
-                ship_body.global_position.distance_to(
-                    asteroid.global_position
-                ) > detail_distance
-            ):
-                asteroid.sync_orbit_position()
-
-        _refresh_asteroid_render_lod(false)
+        # Far belt objects never need active physics bodies. Their visual
+        # models remain rendered normally; collision wakes well before the ship
+        # can reach mining/collision distance.
+        asteroid.set_collision_active(
+            distance <= ASTEROID_PHYSICS_ACTIVE_DISTANCE
+        )
 
 
 func _asteroid_detail_distance() -> float:
@@ -1993,153 +2000,6 @@ func _populate_full_asteroid_ring() -> void:
             angle,
             height
         )
-
-
-func _build_far_ring_renderer() -> void:
-    if far_ring_root != null and is_instance_valid(far_ring_root):
-        far_ring_root.queue_free()
-
-    far_ring_root = Node3D.new()
-    far_ring_root.name = "FarAsteroidRing"
-    add_child(far_ring_root)
-
-    far_ring_multimeshes.clear()
-    far_ring_slots.clear()
-
-    for palette in ["ice", "dirt"]:
-        var members: Array[SpaceAsteroid] = []
-        for asteroid_value in asteroids.values():
-            if asteroid_value == null or not is_instance_valid(asteroid_value):
-                continue
-            var asteroid := asteroid_value as SpaceAsteroid
-            if asteroid.palette_kind == palette:
-                members.append(asteroid)
-
-        var cube := BoxMesh.new()
-        cube.size = Vector3.ONE
-
-        var material := StandardMaterial3D.new()
-        material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-        material.roughness = 1.0
-        material.cull_mode = BaseMaterial3D.CULL_BACK
-        material.albedo_color = (
-            Color("#4f86ad")
-            if palette == "ice"
-            else Color("#a57b52")
-        )
-        cube.material = material
-
-        var multimesh := MultiMesh.new()
-        multimesh.transform_format = MultiMesh.TRANSFORM_3D
-        multimesh.mesh = cube
-        multimesh.instance_count = members.size()
-
-        var instance := MultiMeshInstance3D.new()
-        instance.name = "FarAsteroids_" + palette.capitalize()
-        instance.multimesh = multimesh
-        instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-        far_ring_root.add_child(instance)
-        far_ring_multimeshes[palette] = instance
-
-        for index in range(members.size()):
-            var asteroid := members[index]
-            far_ring_slots[asteroid.get_instance_id()] = {
-                "palette": palette,
-                "index": index,
-            }
-
-
-func _refresh_asteroid_render_lod(force_sync: bool) -> void:
-    if far_ring_root == null or not is_instance_valid(far_ring_root):
-        return
-
-    var detail_distance := _asteroid_detail_distance()
-    var hidden_transform := Transform3D(
-        Basis.IDENTITY.scaled(Vector3.ZERO),
-        Vector3.ZERO
-    )
-
-    for asteroid_value in asteroids.values():
-        if asteroid_value == null or not is_instance_valid(asteroid_value):
-            continue
-
-        var asteroid := asteroid_value as SpaceAsteroid
-        var distance := ship_body.global_position.distance_to(
-            asteroid.global_position
-        )
-        var high_detail := distance <= detail_distance
-
-        if force_sync and not high_detail:
-            asteroid.sync_orbit_position()
-
-        var occluded := _planet_fully_occludes_asteroid(asteroid)
-        asteroid.set_surface_render_enabled(
-            high_detail and not occluded and asteroid.has_cells()
-        )
-
-        var slot = far_ring_slots.get(
-            asteroid.get_instance_id(),
-            null
-        )
-        if not (slot is Dictionary):
-            continue
-
-        var slot_data := slot as Dictionary
-        var palette := str(slot_data.get("palette", ""))
-        var index := int(slot_data.get("index", -1))
-        var instance = far_ring_multimeshes.get(palette, null)
-        if (
-            instance == null
-            or not is_instance_valid(instance)
-            or index < 0
-        ):
-            continue
-
-        var multimesh := (instance as MultiMeshInstance3D).multimesh
-        if multimesh == null or index >= multimesh.instance_count:
-            continue
-
-        if high_detail or occluded or not asteroid.has_cells():
-            multimesh.set_instance_transform(index, hidden_transform)
-            continue
-
-        # Far asteroids collapse to two palette-batched cube MultiMeshes. Their
-        # exact 3-to-9-cell size remains visible, but hundreds of individual
-        # detailed mesh draw calls become just two far-ring draw calls.
-        var far_basis := Basis.IDENTITY.scaled(
-            Vector3.ONE * float(asteroid.grid_size)
-        )
-        multimesh.set_instance_transform(
-            index,
-            Transform3D(far_basis, asteroid.global_position)
-        )
-
-
-func _planet_fully_occludes_asteroid(
-    asteroid: SpaceAsteroid
-) -> bool:
-    if camera == null:
-        return false
-
-    var segment := asteroid.global_position - camera.global_position
-    var length_squared := segment.length_squared()
-    if length_squared <= 0.0001:
-        return false
-
-    var center_offset := PLANET_CENTER - camera.global_position
-    var t := center_offset.dot(segment) / length_squared
-    if t <= 0.0 or t >= 1.0:
-        return false
-
-    var closest := camera.global_position + segment * t
-    var full_occlusion_radius := maxf(
-        0.0,
-        PLANET_RADIUS - asteroid.bounding_radius()
-    )
-    return (
-        closest.distance_squared_to(PLANET_CENTER)
-        < full_occlusion_radius * full_occlusion_radius
-    )
 
 
 func _asteroid_spawn_is_clear(
