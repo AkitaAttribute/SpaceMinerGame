@@ -219,9 +219,10 @@ func prepare_detach_cell(cell: Vector3i) -> Dictionary:
 
 
 func prepare_detach_closest_cell(from_world: Vector3) -> Dictionary:
+    var excluded_cells: Array[Vector3i] = []
     var selection := closest_surface_cell_excluding(
         from_world,
-        [] as Array[Vector3i]
+        excluded_cells
     )
     if selection.is_empty():
         return {}
