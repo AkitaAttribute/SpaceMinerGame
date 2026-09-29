@@ -20,6 +20,7 @@ var spin_axis := Vector3.UP
 var spin_speed := 0.018
 var palette_primary := Color("#8fd5f2")
 var palette_secondary := Color("#244b73")
+var palette_kind := "ice"
 
 var orbit_enabled := false
 var orbit_center := Vector3.ZERO
@@ -71,7 +72,8 @@ func configure(
     spin_axis = spin_axis.normalized()
     spin_speed = rng.randf_range(0.007, 0.018)
 
-    if palette_type == "ice":
+    palette_kind = "ice" if palette_type == "ice" else "dirt"
+    if palette_kind == "ice":
         palette_primary = Color("#8fd5f2")
         palette_secondary = Color("#244b73")
     else:
@@ -99,15 +101,31 @@ func configure_orbit(
     _update_orbit_position()
 
 
-func update_spin(delta: float) -> void:
+func update_simulation(delta: float, high_detail: bool) -> void:
     if orbit_enabled:
         orbit_angle = fposmod(
             orbit_angle + (orbit_linear_speed / orbit_radius) * delta,
             TAU
         )
+
+        # Near asteroids keep their physics/render transform fully current.
+        # Far asteroids still advance analytically but their Node3D transform
+        # is synchronized at the ring LOD cadence by the simulation manager.
+        if high_detail:
+            _update_orbit_position()
+
+    if high_detail:
+        rotate(spin_axis, spin_speed * delta)
+
+
+func sync_orbit_position() -> void:
+    if orbit_enabled:
         _update_orbit_position()
 
-    rotate(spin_axis, spin_speed * delta)
+
+func set_surface_render_enabled(value: bool) -> void:
+    if _visual != null and is_instance_valid(_visual):
+        _visual.visible = value
 
 
 func _update_orbit_position() -> void:
@@ -550,7 +568,7 @@ func _build_visual() -> void:
     _surface_material.vertex_color_use_as_albedo = true
     _surface_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
     _surface_material.roughness = 1.0
-    _surface_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+    _surface_material.cull_mode = BaseMaterial3D.CULL_BACK
 
     _visual = MeshInstance3D.new()
     _visual.name = "AsteroidSurface"
