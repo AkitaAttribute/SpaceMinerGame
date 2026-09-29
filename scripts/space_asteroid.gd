@@ -123,9 +123,10 @@ func sync_orbit_position() -> void:
         _update_orbit_position()
 
 
-func set_surface_render_enabled(value: bool) -> void:
-    if _visual != null and is_instance_valid(_visual):
-        _visual.visible = value
+func set_collision_active(value: bool) -> void:
+    for collision_shape in _collision_shapes:
+        if collision_shape != null and is_instance_valid(collision_shape):
+            collision_shape.disabled = not value
 
 
 func _update_orbit_position() -> void:
