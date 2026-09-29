@@ -84,6 +84,7 @@ var collision_recovery_asteroid: SpaceAsteroid
 var collision_recovery_saved_velocity := Vector3.ZERO
 var asteroid_update_time := 0.0
 var asteroid_spawn_sequence := 0
+var asteroid_rng := RandomNumberGenerator.new()
 var beam_time := 0.0
 
 var camera_position_smooth := Vector3.ZERO
@@ -125,6 +126,7 @@ func _ready() -> void:
     _load_ship()
     launch_position = ship_body.global_position
     _build_camera()
+    asteroid_rng.randomize()
     _spawn_initial_asteroids()
     _build_ui()
 
@@ -324,6 +326,7 @@ func _instantiate_ship_part(record: Dictionary) -> void:
                 "target": null,
                 "chunk": null,
                 "fire_time": 0.0,
+                "reserved_cell": null,
                 "prepared_detach": {},
                 "beam": beam,
             })
@@ -1414,17 +1417,47 @@ func _resolve_camera_obstruction(
 
 func _spawn_initial_asteroids() -> void:
     var forward := _ship_forward_world()
-    var right := forward.cross(Vector3.UP).normalized()
-    var initial_position := (
-        launch_position
-        + forward * INITIAL_ASTEROID_FORWARD_DISTANCE
-        + right * INITIAL_ASTEROID_SIDE_DISTANCE
-    )
 
-    # This position is deliberately constructed outside every launch/camera
-    # exclusion distance. Spawn it immediately, then maintain only one
-    # additional nearby asteroid.
-    _spawn_asteroid("starter", initial_position, 1001)
+    # Keep the guaranteed first asteroid in the forward hemisphere so it is
+    # immediately useful, but randomize both bearing and distance every run.
+    var spawned := false
+    for attempt in range(ASTEROID_SPAWN_ATTEMPTS):
+        var angle_offset := asteroid_rng.randf_range(
+            deg_to_rad(-34.0),
+            deg_to_rad(34.0)
+        )
+        var direction := forward.rotated(Vector3.UP, angle_offset).normalized()
+        var distance := asteroid_rng.randf_range(
+            INITIAL_ASTEROID_FORWARD_DISTANCE - 8.0,
+            INITIAL_ASTEROID_FORWARD_DISTANCE + 24.0
+        )
+        var candidate := launch_position + direction * distance
+
+        if not _asteroid_spawn_is_clear(candidate):
+            continue
+
+        asteroid_spawn_sequence += 1
+        _spawn_asteroid(
+            "starter_%d" % asteroid_spawn_sequence,
+            candidate,
+            int(asteroid_rng.randi())
+        )
+        spawned = true
+        break
+
+    # Defensive fallback still avoids ever spawning at the ship origin.
+    if not spawned:
+        asteroid_spawn_sequence += 1
+        var fallback := (
+            launch_position
+            + forward * INITIAL_ASTEROID_FORWARD_DISTANCE
+        )
+        _spawn_asteroid(
+            "starter_%d" % asteroid_spawn_sequence,
+            fallback,
+            int(asteroid_rng.randi())
+        )
+
     _maintain_asteroid_population()
 
 
@@ -1483,14 +1516,9 @@ func _maintain_asteroid_population() -> void:
         attempts += 1
         asteroid_spawn_sequence += 1
 
-        var seed_value: int = int(abs(hash(
-            "%s:%d" % [ship_id, asteroid_spawn_sequence]
-        )))
-        var rng := RandomNumberGenerator.new()
-        rng.seed = seed_value
-
-        var angle := rng.randf_range(0.0, TAU)
-        var radius := rng.randf_range(
+        var seed_value := int(asteroid_rng.randi())
+        var angle := asteroid_rng.randf_range(0.0, TAU)
+        var radius := asteroid_rng.randf_range(
             ASTEROID_SPAWN_MIN_RADIUS,
             ASTEROID_SPAWN_MAX_RADIUS
         )
@@ -1594,19 +1622,21 @@ func _update_mining_lasers(delta: float) -> void:
         if chunk != null:
             laser["chunk"] = null
 
-        var previous_target = laser.get("target", null)
-        var target = previous_target
+        var target = laser.get("target", null)
         if not _laser_target_in_range(target, laser):
             target = _choose_laser_target(laser)
             laser["target"] = target
             laser["fire_time"] = 0.0
+            laser["reserved_cell"] = null
             laser["prepared_detach"] = {}
 
         if target == null or not is_instance_valid(target):
             _set_laser_status(laser_index, false, "Out of Range")
-            _track_laser_pivot_to_rest(pivot, delta)
+            # Hold the turret exactly where it was when range was lost. Do not
+            # return to its construction/rest orientation.
             beam.visible = false
             laser["fire_time"] = 0.0
+            laser["reserved_cell"] = null
             laser["prepared_detach"] = {}
             mining_lasers[laser_index] = laser
             continue
@@ -1616,45 +1646,64 @@ func _update_mining_lasers(delta: float) -> void:
             _set_laser_status(laser_index, false, "Error")
             beam.visible = false
             laser["fire_time"] = 0.0
+            laser["reserved_cell"] = null
             laser["prepared_detach"] = {}
             mining_lasers[laser_index] = laser
             continue
 
+        # Reserve a unique surface voxel per laser. This is the mining queue:
+        # another laser targeting the same asteroid must select a different
+        # cell and cannot steal a cell already assigned to an active laser.
+        var reserved_value = laser.get("reserved_cell", null)
+        if not (reserved_value is Vector3i):
+            var exclusions := _reserved_mining_cells(
+                asteroid,
+                laser_index
+            )
+            var selection := asteroid.closest_surface_cell_excluding(
+                _laser_muzzle_world(pivot),
+                exclusions
+            )
+            if selection.is_empty():
+                _set_laser_status(laser_index, false, "Error")
+                beam.visible = false
+                mining_lasers[laser_index] = laser
+                continue
+
+            laser["reserved_cell"] = (
+                selection.get("cell", Vector3i.ZERO) as Vector3i
+            )
+            reserved_value = laser["reserved_cell"]
+
+        var reserved_cell := reserved_value as Vector3i
         var fire_time := float(laser.get("fire_time", 0.0))
         var prepared := laser.get("prepared_detach", {}) as Dictionary
 
-        # Prepare the exact post-removal asteroid mesh/collision state during
-        # the mining cycle rather than rebuilding it on the break-off frame.
         if fire_time >= LASER_PREPARE_SECONDS and prepared.is_empty():
-            var prep_muzzle := _laser_muzzle_world(pivot)
-            prepared = asteroid.prepare_detach_closest_cell(prep_muzzle)
+            prepared = asteroid.prepare_detach_cell(reserved_cell)
             laser["prepared_detach"] = prepared
 
+        var cell_position := asteroid.cell_world_position(reserved_cell)
         var aim_position := asteroid.global_position
-        if not prepared.is_empty():
-            var prepared_cell := (
-                prepared.get("cell", Vector3i.ZERO) as Vector3i
-            )
-            var cell_position := asteroid.cell_world_position(prepared_cell)
-            var transition_start := (
-                LASER_MINING_SECONDS
-                - LASER_SURFACE_TRANSITION_SECONDS
-            )
-            var transition := clampf(
-                (fire_time - transition_start)
-                / LASER_SURFACE_TRANSITION_SECONDS,
-                0.0,
-                1.0
-            )
-            var smooth_transition := (
-                transition
-                * transition
-                * (3.0 - 2.0 * transition)
-            )
-            aim_position = asteroid.global_position.lerp(
-                cell_position,
-                smooth_transition
-            )
+        var transition_start := (
+            LASER_MINING_SECONDS
+            - LASER_SURFACE_TRANSITION_SECONDS
+        )
+        var transition := clampf(
+            (fire_time - transition_start)
+            / LASER_SURFACE_TRANSITION_SECONDS,
+            0.0,
+            1.0
+        )
+        var smooth_transition := (
+            transition
+            * transition
+            * (3.0 - 2.0 * transition)
+        )
+        aim_position = asteroid.global_position.lerp(
+            cell_position,
+            smooth_transition
+        )
 
         _track_laser_pivot(pivot, aim_position, delta)
 
@@ -1668,6 +1717,10 @@ func _update_mining_lasers(delta: float) -> void:
             current_direction.dot(desired_direction)
             >= LASER_ALIGNMENT_DOT
         )
+
+        # Obstruction is intentionally ONLY solid ship-builder cells. Tractor
+        # chunks and every particle/beam effect live outside ship_cell_boxes,
+        # so they can never block another mining laser.
         var blocked := _ship_blocks_segment(
             muzzle,
             aim_position,
@@ -1682,9 +1735,6 @@ func _update_mining_lasers(delta: float) -> void:
         else:
             _set_laser_status(laser_index, true, "")
 
-            # Alignment is required to begin firing, but once the mining beam
-            # is active it remains continuous while its endpoint glides from
-            # asteroid center to the selected voxel and the turret catches up.
             var already_firing := fire_time > 0.0
             if aligned or already_firing:
                 beam.visible = true
@@ -1692,31 +1742,77 @@ func _update_mining_lasers(delta: float) -> void:
                 fire_time += delta
                 laser["fire_time"] = fire_time
 
-                if (
-                    fire_time >= LASER_MINING_SECONDS
-                    and not prepared.is_empty()
-                ):
-                    var detached := asteroid.commit_prepared_detach(prepared)
-                    laser["fire_time"] = 0.0
-                    laser["prepared_detach"] = {}
-
-                    if not detached.is_empty():
-                        var chunk_node := _create_tractor_chunk(
-                            detached["position"] as Vector3,
-                            detached["color"] as Color
+                if fire_time >= LASER_MINING_SECONDS:
+                    if prepared.is_empty():
+                        prepared = asteroid.prepare_detach_cell(
+                            reserved_cell
                         )
-                        laser["chunk"] = chunk_node
-                        tractor_chunks.append({
-                            "node": chunk_node,
-                            "laser_index": laser_index,
-                            "speed": TRACTOR_START_SPEED,
-                            "color": detached["color"],
-                        })
+                        laser["prepared_detach"] = prepared
+
+                    if not prepared.is_empty():
+                        var detached := asteroid.commit_prepared_detach(
+                            prepared
+                        )
+
+                        if detached.is_empty():
+                            # Another laser may have committed a different
+                            # reserved voxel first, making our prepared mesh
+                            # version stale. Re-prepare THIS reserved cell from
+                            # the new asteroid state without resetting the
+                            # completed mining cycle, then commit next frame.
+                            var refreshed := asteroid.prepare_detach_cell(
+                                reserved_cell
+                            )
+                            if refreshed.is_empty():
+                                laser["reserved_cell"] = null
+                                laser["prepared_detach"] = {}
+                                laser["fire_time"] = transition_start
+                            else:
+                                laser["prepared_detach"] = refreshed
+                                laser["fire_time"] = LASER_MINING_SECONDS
+                        else:
+                            laser["fire_time"] = 0.0
+                            laser["reserved_cell"] = null
+                            laser["prepared_detach"] = {}
+
+                            var chunk_node := _create_tractor_chunk(
+                                detached["position"] as Vector3,
+                                detached["color"] as Color
+                            )
+                            laser["chunk"] = chunk_node
+                            tractor_chunks.append({
+                                "node": chunk_node,
+                                "laser_index": laser_index,
+                                "speed": TRACTOR_START_SPEED,
+                                "color": detached["color"],
+                            })
             else:
                 beam.visible = false
                 laser["fire_time"] = 0.0
 
         mining_lasers[laser_index] = laser
+
+
+func _reserved_mining_cells(
+    asteroid: SpaceAsteroid,
+    except_laser_index: int
+) -> Array[Vector3i]:
+    var result: Array[Vector3i] = []
+
+    for index in range(mining_lasers.size()):
+        if index == except_laser_index:
+            continue
+
+        var other := mining_lasers[index]
+        var other_target = other.get("target", null)
+        if other_target != asteroid:
+            continue
+
+        var other_cell = other.get("reserved_cell", null)
+        if other_cell is Vector3i:
+            result.append(other_cell as Vector3i)
+
+    return result
 
 
 func _laser_target_in_range(target, laser: Dictionary) -> bool:
