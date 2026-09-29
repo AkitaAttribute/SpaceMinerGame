@@ -161,40 +161,73 @@ func distance_to_surface(from_world: Vector3) -> float:
     return sqrt(best_distance_squared)
 
 
-func prepare_detach_closest_cell(from_world: Vector3) -> Dictionary:
+func closest_surface_cell_excluding(
+    from_world: Vector3,
+    excluded_cells: Array[Vector3i]
+) -> Dictionary:
     if _surface_cells.is_empty():
         return {}
+
+    var excluded: Dictionary = {}
+    for cell in excluded_cells:
+        excluded[_cell_key(cell)] = true
 
     var best_cell := Vector3i.ZERO
     var found := false
     var best_distance := INF
+    var best_world_position := global_position
 
     for cell in _surface_cells:
+        if excluded.has(_cell_key(cell)):
+            continue
+
         var world_position := to_global(_cell_center(cell))
         var distance := world_position.distance_squared_to(from_world)
         if distance < best_distance:
             best_distance = distance
             best_cell = cell
+            best_world_position = world_position
             found = true
 
     if not found:
         return {}
 
+    return {
+        "cell": best_cell,
+        "position": best_world_position,
+    }
+
+
+func prepare_detach_cell(cell: Vector3i) -> Dictionary:
+    if not _is_occupied(cell) or not _surface_cells.has(cell):
+        return {}
+
     # Build the post-mining mesh and collision partition while the beam is
-    # still mining. The actual visible/physics swap at detach time is then
-    # cheap and avoids a frame hitch exactly when the chunk breaks free.
-    var future_surface := _surface_cells_after_removal(best_cell)
-    var future_mesh := _build_surface_mesh(future_surface, best_cell)
-    var future_collision := _collision_boxes_after_removal(best_cell)
+    # still mining. The visible/physics swap at detach time stays cheap.
+    var future_surface := _surface_cells_after_removal(cell)
+    var future_mesh := _build_surface_mesh(future_surface, cell)
+    var future_collision := _collision_boxes_after_removal(cell)
 
     return {
         "version": _geometry_version,
-        "cell": best_cell,
-        "color": _cell_color(best_cell),
+        "cell": cell,
+        "color": _cell_color(cell),
         "surface_cells": future_surface,
         "mesh": future_mesh,
         "collision_boxes": future_collision,
     }
+
+
+func prepare_detach_closest_cell(from_world: Vector3) -> Dictionary:
+    var selection := closest_surface_cell_excluding(
+        from_world,
+        [] as Array[Vector3i]
+    )
+    if selection.is_empty():
+        return {}
+    return prepare_detach_cell(
+        selection.get("cell", Vector3i.ZERO) as Vector3i
+    )
 
 
 func commit_prepared_detach(prepared: Dictionary) -> Dictionary:
