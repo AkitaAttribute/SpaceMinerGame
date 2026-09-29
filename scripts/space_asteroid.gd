@@ -24,7 +24,9 @@ var _seed := 0
 var _removed_cells: Dictionary = {}
 var _surface_cells: Array[Vector3i] = []
 var _remaining_cells := TOTAL_CELLS
+var _geometry_version := 0
 var _visual: MeshInstance3D
+var _surface_material: StandardMaterial3D
 var _collision_shapes: Array[CollisionShape3D] = []
 var _collision_boxes: Array[AABB] = []
 var _debug_hitboxes_visible := false
@@ -38,6 +40,7 @@ func configure(id_value: String, world_position: Vector3, seed_value: int) -> vo
     _removed_cells.clear()
     _surface_cells.clear()
     _remaining_cells = TOTAL_CELLS
+    _geometry_version = 0
 
     var rng := RandomNumberGenerator.new()
     rng.seed = seed_value
@@ -158,14 +161,13 @@ func distance_to_surface(from_world: Vector3) -> float:
     return sqrt(best_distance_squared)
 
 
-func detach_closest_cell(from_world: Vector3) -> Dictionary:
+func prepare_detach_closest_cell(from_world: Vector3) -> Dictionary:
     if _surface_cells.is_empty():
         return {}
 
     var best_cell := Vector3i.ZERO
     var found := false
     var best_distance := INF
-    var best_world_position := global_position
 
     for cell in _surface_cells:
         var world_position := to_global(_cell_center(cell))
@@ -173,27 +175,215 @@ func detach_closest_cell(from_world: Vector3) -> Dictionary:
         if distance < best_distance:
             best_distance = distance
             best_cell = cell
-            best_world_position = world_position
             found = true
 
     if not found:
         return {}
 
-    var color := _cell_color(best_cell)
-    _removed_cells[_cell_key(best_cell)] = true
-    _remaining_cells = maxi(0, _remaining_cells - 1)
-
-    # Mining is the only time the asteroid geometry changes. Rebuild both the
-    # one combined exterior mesh and the merged collision cuboids so physics
-    # matches the visible missing cell without creating thousands of shapes.
-    _rebuild_surface()
-    _rebuild_collision()
+    # Build the post-mining mesh and collision partition while the beam is
+    # still mining. The actual visible/physics swap at detach time is then
+    # cheap and avoids a frame hitch exactly when the chunk breaks free.
+    var future_surface := _surface_cells_after_removal(best_cell)
+    var future_mesh := _build_surface_mesh(future_surface, best_cell)
+    var future_collision := _collision_boxes_after_removal(best_cell)
 
     return {
-        "position": best_world_position,
-        "color": color,
+        "version": _geometry_version,
         "cell": best_cell,
+        "color": _cell_color(best_cell),
+        "surface_cells": future_surface,
+        "mesh": future_mesh,
+        "collision_boxes": future_collision,
     }
+
+
+func commit_prepared_detach(prepared: Dictionary) -> Dictionary:
+    if prepared.is_empty():
+        return {}
+    if int(prepared.get("version", -1)) != _geometry_version:
+        return {}
+
+    var cell := prepared.get("cell", Vector3i.ZERO) as Vector3i
+    if not _is_occupied(cell):
+        return {}
+
+    var world_position := to_global(_cell_center(cell))
+    var color := prepared.get("color", _cell_color(cell)) as Color
+
+    _removed_cells[_cell_key(cell)] = true
+    _remaining_cells = maxi(0, _remaining_cells - 1)
+    _geometry_version += 1
+
+    _surface_cells.clear()
+    var prepared_surface = prepared.get("surface_cells", [])
+    if prepared_surface is Array:
+        for value in prepared_surface:
+            _surface_cells.append(value as Vector3i)
+
+    var prepared_mesh = prepared.get("mesh", null)
+    if prepared_mesh is Mesh:
+        _visual.mesh = prepared_mesh as Mesh
+    else:
+        _rebuild_surface()
+
+    _collision_boxes.clear()
+    var prepared_boxes = prepared.get("collision_boxes", [])
+    if prepared_boxes is Array:
+        for value in prepared_boxes:
+            _collision_boxes.append(value as AABB)
+
+    if _collision_boxes.is_empty() and _remaining_cells > 0:
+        _rebuild_collision()
+    else:
+        _sync_collision_shapes()
+
+    return {
+        "position": world_position,
+        "color": color,
+        "cell": cell,
+    }
+
+
+func detach_closest_cell(from_world: Vector3) -> Dictionary:
+    # Compatibility path for any caller that has not opted into preparation.
+    # Simulation mining uses prepare + commit so the expensive mesh work is
+    # completed before the visible break-off frame.
+    return commit_prepared_detach(
+        prepare_detach_closest_cell(from_world)
+    )
+
+
+func cell_world_position(cell: Vector3i) -> Vector3:
+    return to_global(_cell_center(cell))
+
+
+func _surface_cells_after_removal(
+    removed_cell: Vector3i
+) -> Array[Vector3i]:
+    var result: Array[Vector3i] = []
+    var present: Dictionary = {}
+
+    for cell in _surface_cells:
+        if cell == removed_cell:
+            continue
+        result.append(cell)
+        present[_cell_key(cell)] = true
+
+    # Only the six direct neighbors can become newly exposed when one voxel is
+    # removed, so there is no reason to rescan all 8,000 cells.
+    for direction in FACE_DIRECTIONS:
+        var neighbor := removed_cell + direction
+        if not _is_occupied(neighbor):
+            continue
+        var key := _cell_key(neighbor)
+        if present.has(key):
+            continue
+        result.append(neighbor)
+        present[key] = true
+
+    return result
+
+
+func _build_surface_mesh(
+    surface_cells: Array[Vector3i],
+    additionally_removed: Vector3i
+) -> ArrayMesh:
+    var surface := SurfaceTool.new()
+    surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+    for cell in surface_cells:
+        var center := _cell_center(cell)
+        var color := _cell_color(cell)
+
+        for direction in FACE_DIRECTIONS:
+            if not _is_occupied_preview(
+                cell + direction,
+                additionally_removed
+            ):
+                _append_exposed_face(surface, center, direction, color)
+
+    var mesh := surface.commit()
+    if _surface_material != null and mesh.get_surface_count() > 0:
+        mesh.surface_set_material(0, _surface_material)
+    return mesh
+
+
+func _is_occupied_preview(
+    cell: Vector3i,
+    additionally_removed: Vector3i
+) -> bool:
+    return cell != additionally_removed and _is_occupied(cell)
+
+
+func _collision_boxes_after_removal(
+    removed_cell: Vector3i
+) -> Array[AABB]:
+    var result: Array[AABB] = []
+    var cell_min := _cell_center(removed_cell) - Vector3.ONE * (CELL_SIZE * 0.5)
+    var cell_max := cell_min + Vector3.ONE * CELL_SIZE
+    var cell_center := (cell_min + cell_max) * 0.5
+    var split_done := false
+
+    for box in _collision_boxes:
+        if split_done or not box.has_point(cell_center):
+            result.append(box)
+            continue
+
+        split_done = true
+        var minimum := box.position
+        var maximum := box.end
+
+        _append_box_if_valid(
+            result,
+            Vector3(minimum.x, minimum.y, minimum.z),
+            Vector3(cell_min.x, maximum.y, maximum.z)
+        )
+        _append_box_if_valid(
+            result,
+            Vector3(cell_max.x, minimum.y, minimum.z),
+            Vector3(maximum.x, maximum.y, maximum.z)
+        )
+
+        var center_x_min := maxf(minimum.x, cell_min.x)
+        var center_x_max := minf(maximum.x, cell_max.x)
+
+        _append_box_if_valid(
+            result,
+            Vector3(center_x_min, minimum.y, minimum.z),
+            Vector3(center_x_max, cell_min.y, maximum.z)
+        )
+        _append_box_if_valid(
+            result,
+            Vector3(center_x_min, cell_max.y, minimum.z),
+            Vector3(center_x_max, maximum.y, maximum.z)
+        )
+
+        var center_y_min := maxf(minimum.y, cell_min.y)
+        var center_y_max := minf(maximum.y, cell_max.y)
+
+        _append_box_if_valid(
+            result,
+            Vector3(center_x_min, center_y_min, minimum.z),
+            Vector3(center_x_max, center_y_max, cell_min.z)
+        )
+        _append_box_if_valid(
+            result,
+            Vector3(center_x_min, center_y_min, cell_max.z),
+            Vector3(center_x_max, center_y_max, maximum.z)
+        )
+
+    return result
+
+
+func _append_box_if_valid(
+    boxes: Array[AABB],
+    minimum: Vector3,
+    maximum: Vector3
+) -> void:
+    var size := maximum - minimum
+    if size.x <= 0.0001 or size.y <= 0.0001 or size.z <= 0.0001:
+        return
+    boxes.append(AABB(minimum, size))
 
 
 func has_cells() -> bool:
@@ -254,6 +444,12 @@ func _cell_color(cell: Vector3i) -> Color:
 
 
 func _build_visual() -> void:
+    _surface_material = StandardMaterial3D.new()
+    _surface_material.vertex_color_use_as_albedo = true
+    _surface_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    _surface_material.roughness = 1.0
+    _surface_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+
     _visual = MeshInstance3D.new()
     _visual.name = "AsteroidSurface"
     _visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -273,27 +469,13 @@ func _rebuild_surface() -> void:
                 if _is_surface_cell(cell):
                     _surface_cells.append(cell)
 
-    var surface := SurfaceTool.new()
-    surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-
-    for cell in _surface_cells:
-        var center := _cell_center(cell)
-        var color := _cell_color(cell)
-
-        for direction in FACE_DIRECTIONS:
-            if not _is_occupied(cell + direction):
-                _append_exposed_face(surface, center, direction, color)
-
-    var mesh := surface.commit()
-
-    var material := StandardMaterial3D.new()
-    material.vertex_color_use_as_albedo = true
-    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-    material.roughness = 1.0
-    material.cull_mode = BaseMaterial3D.CULL_DISABLED
-    mesh.surface_set_material(0, material)
-
-    _visual.mesh = mesh
+    # Initial generation may scan the grid, but subsequent mined-cell updates
+    # use the prepared local surface update above.
+    var impossible_cell := Vector3i(1000000, 1000000, 1000000)
+    _visual.mesh = _build_surface_mesh(
+        _surface_cells,
+        impossible_cell
+    )
 
 
 func _append_exposed_face(
@@ -362,24 +544,22 @@ func _append_triangle(
 
 
 func _build_collision() -> void:
-    _rebuild_collision()
+    _collision_boxes.clear()
+    var half_size := Vector3(
+        float(GRID_SIZE) * CELL_SIZE,
+        float(GRID_HEIGHT) * CELL_SIZE,
+        float(GRID_SIZE) * CELL_SIZE
+    )
+    _collision_boxes.append(
+        AABB(-half_size * 0.5, half_size)
+    )
+    _sync_collision_shapes()
 
 
 func _rebuild_collision() -> void:
-    # The visual is voxel-based, but using one CollisionShape3D per occupied
-    # cell would mean as many as 8,000 physics shapes. Instead greedily merge
-    # adjacent occupied cells into larger axis-aligned cuboids. A pristine
-    # asteroid is exactly one box; mined notches add only the boxes needed to
-    # describe the remaining solid volume.
-    for collision_shape in _collision_shapes:
-        if collision_shape != null and is_instance_valid(collision_shape):
-            if collision_shape.get_parent() == self:
-                remove_child(collision_shape)
-            collision_shape.queue_free()
-
-    _collision_shapes.clear()
+    # Full fallback for unusual state recovery. Normal mining never uses this
+    # grid scan; it incrementally splits the existing collision cuboids.
     _collision_boxes.clear()
-
     var visited: Dictionary = {}
     var half := int(GRID_SIZE / 2)
     var half_height := int(GRID_HEIGHT / 2)
@@ -439,24 +619,38 @@ func _rebuild_collision() -> void:
                                 Vector3i(mark_x, mark_y, mark_z)
                             )] = true
 
-                var box := AABB(
-                    Vector3(float(x), float(y), float(z)) * CELL_SIZE,
-                    Vector3(
-                        float(size_x),
-                        float(size_y),
-                        float(size_z)
-                    ) * CELL_SIZE
+                _collision_boxes.append(
+                    AABB(
+                        Vector3(float(x), float(y), float(z)) * CELL_SIZE,
+                        Vector3(
+                            float(size_x),
+                            float(size_y),
+                            float(size_z)
+                        ) * CELL_SIZE
+                    )
                 )
-                _collision_boxes.append(box)
 
-                var box_shape := BoxShape3D.new()
-                box_shape.size = box.size
+    _sync_collision_shapes()
 
-                var collision_shape := CollisionShape3D.new()
-                collision_shape.shape = box_shape
-                collision_shape.position = box.position + box.size * 0.5
-                add_child(collision_shape)
-                _collision_shapes.append(collision_shape)
+
+func _sync_collision_shapes() -> void:
+    for collision_shape in _collision_shapes:
+        if collision_shape != null and is_instance_valid(collision_shape):
+            if collision_shape.get_parent() == self:
+                remove_child(collision_shape)
+            collision_shape.queue_free()
+
+    _collision_shapes.clear()
+
+    for box in _collision_boxes:
+        var box_shape := BoxShape3D.new()
+        box_shape.size = box.size
+
+        var collision_shape := CollisionShape3D.new()
+        collision_shape.shape = box_shape
+        collision_shape.position = box.position + box.size * 0.5
+        add_child(collision_shape)
+        _collision_shapes.append(collision_shape)
 
     _rebuild_debug_hitboxes()
 
