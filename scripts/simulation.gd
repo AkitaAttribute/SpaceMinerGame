@@ -31,13 +31,10 @@ const HEEL_SPRING := 9.0
 const HEEL_DAMPING := 5.4
 const HEEL_STABILITY := 1.35
 
-const ASTEROID_KEEP_DISTANCE := 700.0
-const ASTEROID_UPDATE_INTERVAL := 1.0
 const ASTEROID_SPAWN_SURFACE_GAP := 24.0
 const ASTEROID_LAUNCH_CENTER_CLEARANCE := 56.0
-const ASTEROID_MIN_CENTER_SEPARATION := 12.0
-const ASTEROID_TARGET_COUNT := 20
-const ASTEROID_SPAWN_ATTEMPTS := 96
+const ASTEROID_MIN_CENTER_SEPARATION := 8.0
+const RING_ASTEROID_COUNT := 420
 const ASTEROID_MIN_SIZE := 3
 const ASTEROID_MAX_SIZE := 9
 
@@ -49,7 +46,7 @@ const PLANET_TEXTURE_HEIGHT := 128
 const RING_BASE_RADIUS := 2400.0
 const RING_RADIAL_HALF_WIDTH := 105.0
 const RING_VERTICAL_HALF_THICKNESS := 18.0
-const RING_LOCAL_ARC_HALF_WIDTH := 0.14
+const RING_SLOT_JITTER := 0.18
 const RING_LINEAR_SPEED := 1.20
 
 const CAMERA_MOUSE_SENSITIVITY := 0.0026
@@ -511,6 +508,9 @@ func _build_camera() -> void:
     camera.name = "ThirdPersonCamera"
     camera.current = true
     camera.fov = 60.0
+    # The opposite side of the 2,400-unit ring is almost 4,900 units from
+    # the ship. Keep the entire planetary ring inside the camera frustum.
+    camera.far = 7000.0
     add_child(camera)
 
     var forward := _ship_forward_world()
@@ -1858,9 +1858,9 @@ func _resolve_camera_obstruction(
 
 
 func _spawn_initial_asteroids() -> void:
-    # The ship begins on the same broad orbital band as the asteroid ring.
-    # Populate the nearby arc immediately; no travel threshold is required.
-    _maintain_asteroid_population()
+    # Build the complete ring once. Every asteroid remains present and keeps
+    # orbiting, including bodies on the far side of the planet.
+    _populate_full_asteroid_ring()
 
 
 func _update_asteroids(delta: float) -> void:
@@ -1868,60 +1868,15 @@ func _update_asteroids(delta: float) -> void:
         if asteroid != null and is_instance_valid(asteroid):
             (asteroid as SpaceAsteroid).update_spin(delta)
 
-    asteroid_update_time += delta
-    if asteroid_update_time >= ASTEROID_UPDATE_INTERVAL:
-        asteroid_update_time = 0.0
-        _remove_distant_asteroids()
-        _maintain_asteroid_population()
 
+func _populate_full_asteroid_ring() -> void:
+    if not asteroids.is_empty():
+        return
 
-func _remove_distant_asteroids() -> void:
-    var remove_keys: Array[String] = []
+    var phase := asteroid_rng.randf_range(0.0, TAU)
+    var slot_angle := TAU / float(RING_ASTEROID_COUNT)
 
-    for key in asteroids:
-        var asteroid := asteroids.get(key, null) as SpaceAsteroid
-        if asteroid == null or not is_instance_valid(asteroid):
-            remove_keys.append(str(key))
-            continue
-
-        var distance := asteroid.global_position.distance_to(
-            ship_body.global_position
-        )
-
-        # Maintain only the local portion of the enormous ring. Visible bodies
-        # are retained to avoid popping; old ring members are recycled only
-        # after they have drifted well behind the player.
-        if (
-            distance > ASTEROID_KEEP_DISTANCE
-            and camera != null
-            and camera.is_position_behind(asteroid.global_position)
-        ):
-            asteroid.queue_free()
-            remove_keys.append(str(key))
-
-    for key in remove_keys:
-        asteroids.erase(key)
-
-
-func _maintain_asteroid_population() -> void:
-    var valid_count := 0
-    for value in asteroids.values():
-        if value != null and is_instance_valid(value):
-            valid_count += 1
-
-    var ship_radial := ship_body.global_position - PLANET_CENTER
-    ship_radial.y = 0.0
-    if ship_radial.length_squared() < 0.001:
-        ship_radial = Vector3(0.0, 0.0, RING_BASE_RADIUS)
-
-    var ship_angle := atan2(ship_radial.z, ship_radial.x)
-    var attempts := 0
-
-    while (
-        valid_count < ASTEROID_TARGET_COUNT
-        and attempts < ASTEROID_SPAWN_ATTEMPTS
-    ):
-        attempts += 1
+    for slot in range(RING_ASTEROID_COUNT):
         asteroid_spawn_sequence += 1
 
         var size_value := asteroid_rng.randi_range(
@@ -1931,10 +1886,18 @@ func _maintain_asteroid_population() -> void:
         var candidate_radius := (
             sqrt(3.0) * float(size_value) * 0.5
         )
-        var angle := ship_angle + asteroid_rng.randf_range(
-            -RING_LOCAL_ARC_HALF_WIDTH,
-            RING_LOCAL_ARC_HALF_WIDTH
+
+        # Even slots guarantee coverage around all 360 degrees. A small random
+        # offset prevents the field from looking mechanically uniform.
+        var jitter := asteroid_rng.randf_range(
+            -slot_angle * RING_SLOT_JITTER,
+            slot_angle * RING_SLOT_JITTER
         )
+        var angle := fposmod(
+            phase + float(slot) * slot_angle + jitter,
+            TAU
+        )
+
         var ring_radius := (
             RING_BASE_RADIUS
             + asteroid_rng.randf_range(
@@ -1952,6 +1915,9 @@ func _maintain_asteroid_population() -> void:
             sin(angle) * ring_radius
         )
 
+        # A slot may be skipped if its randomized width/height would overlap
+        # another asteroid or the launch bubble. The neighboring slots still
+        # preserve continuous ring coverage.
         if not _asteroid_spawn_is_clear(
             candidate,
             candidate_radius
@@ -1976,7 +1942,6 @@ func _maintain_asteroid_population() -> void:
             angle,
             height
         )
-        valid_count += 1
 
 
 func _asteroid_spawn_is_clear(
