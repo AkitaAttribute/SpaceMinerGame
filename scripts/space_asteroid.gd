@@ -1,10 +1,9 @@
 class_name SpaceAsteroid
 extends AnimatableBody3D
 
-const GRID_SIZE := 20
-const GRID_HEIGHT := 20
+const MIN_GRID_SIZE := 3
+const MAX_GRID_SIZE := 9
 const CELL_SIZE := 1.0
-const TOTAL_CELLS := GRID_SIZE * GRID_HEIGHT * GRID_SIZE
 
 const FACE_DIRECTIONS: Array[Vector3i] = [
     Vector3i(1, 0, 0),
@@ -16,14 +15,23 @@ const FACE_DIRECTIONS: Array[Vector3i] = [
 ]
 
 var asteroid_id := ""
+var grid_size := 6
 var spin_axis := Vector3.UP
-var spin_speed := 0.03
-var base_color := Color("#6e7783")
+var spin_speed := 0.018
+var palette_primary := Color("#8fd5f2")
+var palette_secondary := Color("#244b73")
+
+var orbit_enabled := false
+var orbit_center := Vector3.ZERO
+var orbit_radius := 1.0
+var orbit_angle := 0.0
+var orbit_height := 0.0
+var orbit_linear_speed := 0.0
 
 var _seed := 0
 var _removed_cells: Dictionary = {}
 var _surface_cells: Array[Vector3i] = []
-var _remaining_cells := TOTAL_CELLS
+var _remaining_cells := 0
 var _geometry_version := 0
 var _visual: MeshInstance3D
 var _surface_material: StandardMaterial3D
@@ -33,14 +41,22 @@ var _debug_hitboxes_visible := false
 var _debug_hitbox_root: Node3D
 
 
-func configure(id_value: String, world_position: Vector3, seed_value: int) -> void:
+func configure(
+    id_value: String,
+    world_position: Vector3,
+    seed_value: int,
+    size_value := 6,
+    palette_type := "dirt"
+) -> void:
     asteroid_id = id_value
     position = world_position
     _seed = seed_value
+    grid_size = clampi(size_value, MIN_GRID_SIZE, MAX_GRID_SIZE)
     _removed_cells.clear()
     _surface_cells.clear()
-    _remaining_cells = TOTAL_CELLS
+    _remaining_cells = grid_size * grid_size * grid_size
     _geometry_version = 0
+    orbit_enabled = false
 
     var rng := RandomNumberGenerator.new()
     rng.seed = seed_value
@@ -53,25 +69,57 @@ func configure(id_value: String, world_position: Vector3, seed_value: int) -> vo
     if spin_axis.length_squared() < 0.05:
         spin_axis = Vector3(0.25, 1.0, -0.15)
     spin_axis = spin_axis.normalized()
-    spin_speed = rng.randf_range(0.012, 0.032)
+    spin_speed = rng.randf_range(0.007, 0.018)
 
-    var palette := [
-        Color("#6e7783"),
-        Color("#756b63"),
-        Color("#646f72"),
-        Color("#7a7061"),
-    ]
-    base_color = palette[rng.randi_range(0, palette.size() - 1)]
+    if palette_type == "ice":
+        palette_primary = Color("#8fd5f2")
+        palette_secondary = Color("#244b73")
+    else:
+        palette_primary = Color("#8a5a35")
+        palette_secondary = Color("#c7a16c")
 
     _build_visual()
     _build_collision()
     _rebuild_surface()
 
 
+func configure_orbit(
+    center: Vector3,
+    radius: float,
+    angle: float,
+    height: float,
+    linear_speed: float
+) -> void:
+    orbit_enabled = true
+    orbit_center = center
+    orbit_radius = maxf(1.0, radius)
+    orbit_angle = angle
+    orbit_height = height
+    orbit_linear_speed = linear_speed
+    _update_orbit_position()
+
+
 func update_spin(delta: float) -> void:
-    # The asteroid is one MeshInstance3D under one rotating body. Individual
-    # voxel cells are not rendered or rotated as separate objects/instances.
+    if orbit_enabled:
+        orbit_angle = fposmod(
+            orbit_angle + (orbit_linear_speed / orbit_radius) * delta,
+            TAU
+        )
+        _update_orbit_position()
+
     rotate(spin_axis, spin_speed * delta)
+
+
+func _update_orbit_position() -> void:
+    position = orbit_center + Vector3(
+        cos(orbit_angle) * orbit_radius,
+        orbit_height,
+        sin(orbit_angle) * orbit_radius
+    )
+
+
+func bounding_radius() -> float:
+    return sqrt(3.0) * float(grid_size) * CELL_SIZE * 0.5
 
 
 func closest_cell_world(from_world: Vector3) -> Vector3:
@@ -424,11 +472,24 @@ func has_cells() -> bool:
     return _remaining_cells > 0
 
 
+func _grid_min_index() -> int:
+    return -int(floor(float(grid_size) * 0.5))
+
+
+func _grid_max_exclusive() -> int:
+    return _grid_min_index() + grid_size
+
+
+func _grid_center_offset() -> float:
+    return 0.5 if grid_size % 2 == 1 else 0.0
+
+
 func _cell_center(cell: Vector3i) -> Vector3:
+    var offset := _grid_center_offset()
     return Vector3(
-        float(cell.x) + 0.5,
-        float(cell.y) + 0.5,
-        float(cell.z) + 0.5
+        float(cell.x) + 0.5 - offset,
+        float(cell.y) + 0.5 - offset,
+        float(cell.z) + 0.5 - offset
     ) * CELL_SIZE
 
 
@@ -437,15 +498,15 @@ func _cell_key(cell: Vector3i) -> String:
 
 
 func _is_in_bounds(cell: Vector3i) -> bool:
-    var half := int(GRID_SIZE / 2)
-    var half_height := int(GRID_HEIGHT / 2)
+    var minimum := _grid_min_index()
+    var maximum := _grid_max_exclusive()
     return (
-        cell.x >= -half
-        and cell.x < half
-        and cell.y >= -half_height
-        and cell.y < half_height
-        and cell.z >= -half
-        and cell.z < half
+        cell.x >= minimum
+        and cell.x < maximum
+        and cell.y >= minimum
+        and cell.y < maximum
+        and cell.z >= minimum
+        and cell.z < maximum
     )
 
 
@@ -464,15 +525,22 @@ func _is_surface_cell(cell: Vector3i) -> bool:
 
 
 func _cell_color(cell: Vector3i) -> Color:
-    # Deterministic per-cell variation without storing 8,000 Color objects.
     var key := "%d:%d:%d:%d" % [_seed, cell.x, cell.y, cell.z]
     var hashed: int = int(abs(hash(key)))
     var normalized := float(hashed % 1000) / 999.0
-    var variation := lerpf(-0.075, 0.075, normalized)
+    var mixed := palette_primary.lerp(
+        palette_secondary,
+        lerpf(0.18, 0.82, normalized)
+    )
+    var detail := lerpf(
+        -0.035,
+        0.035,
+        float((hashed / 1000) % 1000) / 999.0
+    )
     return Color(
-        clampf(base_color.r + variation, 0.0, 1.0),
-        clampf(base_color.g + variation, 0.0, 1.0),
-        clampf(base_color.b + variation, 0.0, 1.0),
+        clampf(mixed.r + detail, 0.0, 1.0),
+        clampf(mixed.g + detail, 0.0, 1.0),
+        clampf(mixed.b + detail, 0.0, 1.0),
         1.0
     )
 
@@ -493,12 +561,12 @@ func _build_visual() -> void:
 func _rebuild_surface() -> void:
     _surface_cells.clear()
 
-    var half := int(GRID_SIZE / 2)
-    var half_height := int(GRID_HEIGHT / 2)
+    var minimum := _grid_min_index()
+    var maximum := _grid_max_exclusive()
 
-    for y in range(-half_height, half_height):
-        for x in range(-half, half):
-            for z in range(-half, half):
+    for y in range(minimum, maximum):
+        for x in range(minimum, maximum):
+            for z in range(minimum, maximum):
                 var cell := Vector3i(x, y, z)
                 if _is_surface_cell(cell):
                     _surface_cells.append(cell)
@@ -579,11 +647,7 @@ func _append_triangle(
 
 func _build_collision() -> void:
     _collision_boxes.clear()
-    var half_size := Vector3(
-        float(GRID_SIZE) * CELL_SIZE,
-        float(GRID_HEIGHT) * CELL_SIZE,
-        float(GRID_SIZE) * CELL_SIZE
-    )
+    var half_size := Vector3.ONE * float(grid_size) * CELL_SIZE
     _collision_boxes.append(
         AABB(-half_size * 0.5, half_size)
     )
@@ -595,19 +659,19 @@ func _rebuild_collision() -> void:
     # grid scan; it incrementally splits the existing collision cuboids.
     _collision_boxes.clear()
     var visited: Dictionary = {}
-    var half := int(GRID_SIZE / 2)
-    var half_height := int(GRID_HEIGHT / 2)
+    var minimum := _grid_min_index()
+    var maximum := _grid_max_exclusive()
 
-    for y in range(-half_height, half_height):
-        for z in range(-half, half):
-            for x in range(-half, half):
+    for y in range(minimum, maximum):
+        for z in range(minimum, maximum):
+            for x in range(minimum, maximum):
                 var start := Vector3i(x, y, z)
                 if not _collision_cell_available(start, visited):
                     continue
 
                 var size_x := 1
                 while (
-                    x + size_x < half
+                    x + size_x < maximum
                     and _collision_cell_available(
                         Vector3i(x + size_x, y, z),
                         visited
@@ -616,7 +680,7 @@ func _rebuild_collision() -> void:
                     size_x += 1
 
                 var size_z := 1
-                while z + size_z < half:
+                while z + size_z < maximum:
                     var z_clear := true
                     for check_x in range(x, x + size_x):
                         if not _collision_cell_available(
@@ -630,7 +694,7 @@ func _rebuild_collision() -> void:
                     size_z += 1
 
                 var size_y := 1
-                while y + size_y < half_height:
+                while y + size_y < maximum:
                     var y_clear := true
                     for check_z in range(z, z + size_z):
                         for check_x in range(x, x + size_x):
@@ -653,9 +717,11 @@ func _rebuild_collision() -> void:
                                 Vector3i(mark_x, mark_y, mark_z)
                             )] = true
 
+                var start_cell := Vector3i(x, y, z)
                 _collision_boxes.append(
                     AABB(
-                        Vector3(float(x), float(y), float(z)) * CELL_SIZE,
+                        _cell_center(start_cell)
+                        - Vector3.ONE * (CELL_SIZE * 0.5),
                         Vector3(
                             float(size_x),
                             float(size_y),
