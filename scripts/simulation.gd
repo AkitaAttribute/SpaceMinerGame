@@ -999,6 +999,7 @@ func _update_ship_motion(delta: float) -> void:
 
     var throttle := 0.0
     var steer := 0.0
+    var desktop_reverse_held := false
 
     var forward := _ship_forward_world()
     var right := forward.cross(Vector3.UP).normalized()
@@ -1011,26 +1012,23 @@ func _update_ship_motion(delta: float) -> void:
     else:
         var forward_input := Input.get_action_strength(&"builder_up")
         var reverse_input := Input.get_action_strength(&"builder_down")
+        desktop_reverse_held = reverse_input > 0.0
         steer = (
             Input.get_action_strength(&"builder_right")
             - Input.get_action_strength(&"builder_left")
         )
 
-        if reverse_input > 0.0:
-            # S always requests reverse thrust. While moving forward it brakes;
-            # once moving backward it continues to propel the ship backward.
+        if desktop_reverse_held:
+            # A/D only behave as reverse steering while S is physically held.
+            # S supplies all reverse thrust; steering never adds forward thrust
+            # during that input combination.
             throttle = -reverse_input
         elif forward_input > 0.0:
             throttle = forward_input
         elif absf(steer) > 0.0:
-            # A/D alone provides propulsion, but preserves the current travel
-            # direction. If the ship is already reversing, steering alone must
-            # not suddenly inject forward thrust.
-            throttle = (
-                -absf(steer)
-                if current_forward_speed < -0.05
-                else absf(steer)
-            )
+            # Once S is released, A/D immediately return to normal forward
+            # propulsion even if the ship still has residual reverse momentum.
+            throttle = absf(steer)
 
     # Resolve inertial velocity along the actual thrust-defined hull axes.
     surge_speed = current_forward_speed
@@ -1062,7 +1060,12 @@ func _update_ship_motion(delta: float) -> void:
 
     var steering_speed := maxf(absf(surge_speed), 0.35)
     var direction_sign := signf(surge_speed)
-    if absf(direction_sign) < 0.5:
+    if not _is_mobile_platform():
+        # Desktop steering mode is input-driven, not momentum-driven. Reverse
+        # steering exists only while S is held, so releasing S cannot leave
+        # A/D latched in reverse while the old reverse velocity bleeds off.
+        direction_sign = -1.0 if desktop_reverse_held else 1.0
+    elif absf(direction_sign) < 0.5:
         direction_sign = 1.0
 
     var yaw_acceleration := (
