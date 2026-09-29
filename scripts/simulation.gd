@@ -2,9 +2,11 @@ extends Node3D
 
 const LASER_RANGE := 40.0
 const LASER_MINING_SECONDS := 5.0
-const LASER_TRACK_SPEED := deg_to_rad(52.0)
+const LASER_TRACK_SPEED := deg_to_rad(68.0)
 const LASER_ALIGNMENT_DOT := 0.985
 const LASER_BARREL_LENGTH := 0.42
+const LASER_PREPARE_SECONDS := 0.40
+const LASER_SURFACE_TRANSITION_SECONDS := 1.50
 
 const MAX_FORWARD_SPEED := 8.0
 const MAX_REVERSE_SPEED := 3.0
@@ -42,8 +44,8 @@ const CAMERA_MIN_PITCH := deg_to_rad(-8.0)
 const CAMERA_MAX_PITCH := deg_to_rad(68.0)
 const CAMERA_DEFAULT_PITCH := deg_to_rad(25.0)
 
-const TRACTOR_START_SPEED := 3.0
-const TRACTOR_ACCELERATION := 4.5
+const TRACTOR_START_SPEED := 4.0
+const TRACTOR_ACCELERATION := 5.5
 const TRACTOR_MAX_SPEED := 10.0
 
 var ship_id := ""
@@ -322,6 +324,7 @@ func _instantiate_ship_part(record: Dictionary) -> void:
                 "target": null,
                 "chunk": null,
                 "fire_time": 0.0,
+                "prepared_detach": {},
                 "beam": beam,
             })
             _rebuild_laser_range_debug()
@@ -1580,10 +1583,10 @@ func _update_mining_lasers(delta: float) -> void:
         if chunk != null and is_instance_valid(chunk):
             _set_laser_status(laser_index, true, "")
             var chunk_node := chunk as Node3D
-            var target_position := chunk_node.global_position
-            _track_laser_pivot(pivot, target_position, delta)
-            var muzzle := _laser_muzzle_world(pivot)
-            _update_beam_particles(beam, muzzle, target_position)
+            var chunk_position := chunk_node.global_position
+            _track_laser_pivot(pivot, chunk_position, delta)
+            var chunk_muzzle := _laser_muzzle_world(pivot)
+            _update_beam_particles(beam, chunk_muzzle, chunk_position)
             beam.visible = true
             mining_lasers[laser_index] = laser
             continue
@@ -1591,17 +1594,20 @@ func _update_mining_lasers(delta: float) -> void:
         if chunk != null:
             laser["chunk"] = null
 
-        var target = laser.get("target", null)
+        var previous_target = laser.get("target", null)
+        var target = previous_target
         if not _laser_target_in_range(target, laser):
             target = _choose_laser_target(laser)
             laser["target"] = target
             laser["fire_time"] = 0.0
+            laser["prepared_detach"] = {}
 
         if target == null or not is_instance_valid(target):
             _set_laser_status(laser_index, false, "Out of Range")
             _track_laser_pivot_to_rest(pivot, delta)
             beam.visible = false
             laser["fire_time"] = 0.0
+            laser["prepared_detach"] = {}
             mining_lasers[laser_index] = laser
             continue
 
@@ -1610,22 +1616,61 @@ func _update_mining_lasers(delta: float) -> void:
             _set_laser_status(laser_index, false, "Error")
             beam.visible = false
             laser["fire_time"] = 0.0
+            laser["prepared_detach"] = {}
             mining_lasers[laser_index] = laser
             continue
 
-        var target_position := asteroid.global_position
-        _track_laser_pivot(pivot, target_position, delta)
+        var fire_time := float(laser.get("fire_time", 0.0))
+        var prepared := laser.get("prepared_detach", {}) as Dictionary
+
+        # Prepare the exact post-removal asteroid mesh/collision state during
+        # the mining cycle rather than rebuilding it on the break-off frame.
+        if fire_time >= LASER_PREPARE_SECONDS and prepared.is_empty():
+            var prep_muzzle := _laser_muzzle_world(pivot)
+            prepared = asteroid.prepare_detach_closest_cell(prep_muzzle)
+            laser["prepared_detach"] = prepared
+
+        var aim_position := asteroid.global_position
+        if not prepared.is_empty():
+            var prepared_cell := (
+                prepared.get("cell", Vector3i.ZERO) as Vector3i
+            )
+            var cell_position := asteroid.cell_world_position(prepared_cell)
+            var transition_start := (
+                LASER_MINING_SECONDS
+                - LASER_SURFACE_TRANSITION_SECONDS
+            )
+            var transition := clampf(
+                (fire_time - transition_start)
+                / LASER_SURFACE_TRANSITION_SECONDS,
+                0.0,
+                1.0
+            )
+            var smooth_transition := (
+                transition
+                * transition
+                * (3.0 - 2.0 * transition)
+            )
+            aim_position = asteroid.global_position.lerp(
+                cell_position,
+                smooth_transition
+            )
+
+        _track_laser_pivot(pivot, aim_position, delta)
 
         var muzzle := _laser_muzzle_world(pivot)
         var desired_direction := (
-            target_position - pivot.global_position
+            aim_position - pivot.global_position
         ).normalized()
         var current_direction := pivot.global_basis.y.normalized()
 
-        var aligned := current_direction.dot(desired_direction) >= LASER_ALIGNMENT_DOT
+        var aligned := (
+            current_direction.dot(desired_direction)
+            >= LASER_ALIGNMENT_DOT
+        )
         var blocked := _ship_blocks_segment(
             muzzle,
-            target_position,
+            aim_position,
             laser["anchor_cell"] as Vector3i
         )
 
@@ -1633,17 +1678,28 @@ func _update_mining_lasers(delta: float) -> void:
             _set_laser_status(laser_index, false, "Obstructed")
             beam.visible = false
             laser["fire_time"] = 0.0
+            laser["prepared_detach"] = {}
         else:
             _set_laser_status(laser_index, true, "")
 
-            if aligned:
+            # Alignment is required to begin firing, but once the mining beam
+            # is active it remains continuous while its endpoint glides from
+            # asteroid center to the selected voxel and the turret catches up.
+            var already_firing := fire_time > 0.0
+            if aligned or already_firing:
                 beam.visible = true
-                _update_beam_particles(beam, muzzle, target_position)
-                laser["fire_time"] = float(laser["fire_time"]) + delta
+                _update_beam_particles(beam, muzzle, aim_position)
+                fire_time += delta
+                laser["fire_time"] = fire_time
 
-                if float(laser["fire_time"]) >= LASER_MINING_SECONDS:
-                    var detached := asteroid.detach_closest_cell(muzzle)
+                if (
+                    fire_time >= LASER_MINING_SECONDS
+                    and not prepared.is_empty()
+                ):
+                    var detached := asteroid.commit_prepared_detach(prepared)
                     laser["fire_time"] = 0.0
+                    laser["prepared_detach"] = {}
+
                     if not detached.is_empty():
                         var chunk_node := _create_tractor_chunk(
                             detached["position"] as Vector3,
