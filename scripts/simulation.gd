@@ -123,6 +123,7 @@ var laser_range_debug_root: Node3D
 
 var mobile_joystick: VirtualJoystick
 var mobile_last_turn_sign := 1.0
+var desktop_cursor_hold := false
 
 
 func _ready() -> void:
@@ -729,6 +730,25 @@ func _is_mobile_platform() -> bool:
     )
 
 
+func _input(event: InputEvent) -> void:
+    if _is_mobile_platform():
+        return
+
+    if event is InputEventKey:
+        var key_event := event as InputEventKey
+        if key_event.keycode == KEY_TAB:
+            desktop_cursor_hold = key_event.pressed
+
+            if desktop_cursor_hold:
+                # Holding Tab temporarily turns the mouse back into a UI
+                # cursor. Camera orbit is suppressed until Tab is released.
+                Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+            elif not menu_open:
+                Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+
+            get_viewport().set_input_as_handled()
+
+
 func _unhandled_input(event: InputEvent) -> void:
     if event.is_action_pressed(&"menu_back"):
         if menu_open:
@@ -741,7 +761,11 @@ func _unhandled_input(event: InputEvent) -> void:
     if menu_open:
         return
 
-    if not _is_mobile_platform() and event is InputEventMouseMotion:
+    if (
+        not _is_mobile_platform()
+        and not desktop_cursor_hold
+        and event is InputEventMouseMotion
+    ):
         var mouse_motion := event as InputEventMouseMotion
         _orbit_camera_from_delta(
             mouse_motion.relative,
@@ -888,7 +912,7 @@ func _close_menu() -> void:
     menu_dim.visible = false
     menu_panel.visible = false
     gear_button.visible = true
-    if not _is_mobile_platform():
+    if not _is_mobile_platform() and not desktop_cursor_hold:
         Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
@@ -1098,8 +1122,12 @@ func _notification(what: int) -> void:
 
     if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
         Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-    elif what == NOTIFICATION_APPLICATION_FOCUS_IN and not menu_open:
-        Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
+    elif what == NOTIFICATION_APPLICATION_FOCUS_IN:
+        desktop_cursor_hold = Input.is_key_pressed(KEY_TAB)
+        if menu_open or desktop_cursor_hold:
+            Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+        else:
+            Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
 func _physics_process(delta: float) -> void:
