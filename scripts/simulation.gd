@@ -31,18 +31,26 @@ const HEEL_SPRING := 9.0
 const HEEL_DAMPING := 5.4
 const HEEL_STABILITY := 1.35
 
-const ASTEROID_KEEP_DISTANCE := 500.0
-const ASTEROID_UPDATE_INTERVAL := 1.5
-const ASTEROID_HALF_DIAGONAL := 17.4
-const ASTEROID_SPAWN_SURFACE_GAP := 32.0
-const ASTEROID_LAUNCH_CENTER_CLEARANCE := 72.0
-const ASTEROID_MIN_CENTER_SEPARATION := 120.0
-const ASTEROID_TARGET_COUNT := 2
-const ASTEROID_SPAWN_MIN_RADIUS := 105.0
-const ASTEROID_SPAWN_MAX_RADIUS := 180.0
-const ASTEROID_SPAWN_ATTEMPTS := 24
-const INITIAL_ASTEROID_FORWARD_DISTANCE := 95.0
-const INITIAL_ASTEROID_SIDE_DISTANCE := 28.0
+const ASTEROID_KEEP_DISTANCE := 700.0
+const ASTEROID_UPDATE_INTERVAL := 1.0
+const ASTEROID_SPAWN_SURFACE_GAP := 24.0
+const ASTEROID_LAUNCH_CENTER_CLEARANCE := 56.0
+const ASTEROID_MIN_CENTER_SEPARATION := 12.0
+const ASTEROID_TARGET_COUNT := 20
+const ASTEROID_SPAWN_ATTEMPTS := 96
+const ASTEROID_MIN_SIZE := 3
+const ASTEROID_MAX_SIZE := 9
+
+const PLANET_CENTER := Vector3(0.0, 0.0, -2400.0)
+const PLANET_RADIUS := 520.0
+const PLANET_TEXTURE_WIDTH := 256
+const PLANET_TEXTURE_HEIGHT := 128
+
+const RING_BASE_RADIUS := 2400.0
+const RING_RADIAL_HALF_WIDTH := 105.0
+const RING_VERTICAL_HALF_THICKNESS := 18.0
+const RING_LOCAL_ARC_HALF_WIDTH := 0.14
+const RING_LINEAR_SPEED := 1.20
 
 const CAMERA_MOUSE_SENSITIVITY := 0.0026
 const CAMERA_TOUCH_SENSITIVITY := 0.0042
@@ -62,6 +70,7 @@ var camera: Camera3D
 
 var asteroid_root: Node3D
 var effects_root: Node3D
+var planet: MeshInstance3D
 var asteroids: Dictionary = {}
 var mining_lasers: Array[Dictionary] = []
 var thruster_particles: Array[GPUParticles3D] = []
@@ -138,6 +147,7 @@ func _ready() -> void:
 
     _build_environment()
     _build_simulation_roots()
+    _build_planet()
     _load_ship()
     launch_position = ship_body.global_position
     _build_camera()
@@ -164,6 +174,97 @@ func _build_environment() -> void:
     environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
     world.environment = environment
     add_child(world)
+
+
+func _build_planet() -> void:
+    planet = MeshInstance3D.new()
+    planet.name = "RingPlanet"
+
+    var sphere := SphereMesh.new()
+    sphere.radius = PLANET_RADIUS
+    sphere.height = PLANET_RADIUS * 2.0
+    sphere.radial_segments = 96
+    sphere.rings = 48
+
+    var material := StandardMaterial3D.new()
+    material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    material.roughness = 1.0
+    material.albedo_texture = _create_planet_heatmap_texture()
+    sphere.material = material
+
+    planet.mesh = sphere
+    planet.position = PLANET_CENTER
+    planet.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+    add_child(planet)
+
+
+func _create_planet_heatmap_texture() -> ImageTexture:
+    var image := Image.create_empty(
+        PLANET_TEXTURE_WIDTH,
+        PLANET_TEXTURE_HEIGHT,
+        false,
+        Image.FORMAT_RGBA8
+    )
+
+    var deep_water := Color("#102b5b")
+    var shallow_water := Color("#2c78aa")
+    var low_land := Color("#4c8a57")
+    var high_land := Color("#c59a5f")
+    var mountain := Color("#75533c")
+
+    for y in range(PLANET_TEXTURE_HEIGHT):
+        var v := (
+            float(y)
+            / float(maxi(1, PLANET_TEXTURE_HEIGHT - 1))
+        )
+        var latitude := (v - 0.5) * PI
+        var cos_lat := cos(latitude)
+        var py := sin(latitude)
+
+        for x in range(PLANET_TEXTURE_WIDTH):
+            var u := (
+                float(x)
+                / float(maxi(1, PLANET_TEXTURE_WIDTH - 1))
+            )
+            var longitude := (u - 0.5) * TAU
+            var px := cos_lat * cos(longitude)
+            var pz := cos_lat * sin(longitude)
+
+            # Seamless spherical low-frequency bands make continent-sized
+            # regions without requiring a second mesh or an imported texture.
+            var field := (
+                sin(px * 4.2 + py * 1.7) * 0.34
+                + sin(pz * 5.1 - py * 2.3) * 0.28
+                + sin((px + pz) * 7.3 + py * 3.1) * 0.20
+                + sin((px - pz) * 11.0 - py * 1.4) * 0.12
+            )
+            field -= maxf(0.0, absf(py) - 0.82) * 0.65
+
+            var color := deep_water
+            if field < 0.02:
+                var water_heat := clampf(
+                    inverse_lerp(-0.78, 0.02, field),
+                    0.0,
+                    1.0
+                )
+                color = deep_water.lerp(shallow_water, water_heat)
+            else:
+                var land_heat := clampf(
+                    inverse_lerp(0.02, 0.72, field),
+                    0.0,
+                    1.0
+                )
+                color = low_land.lerp(high_land, land_heat)
+                if land_heat > 0.72:
+                    color = color.lerp(
+                        mountain,
+                        inverse_lerp(0.72, 1.0, land_heat)
+                    )
+
+            image.set_pixel(x, y, color)
+
+    image.generate_mipmaps()
+    return ImageTexture.create_from_image(image)
 
 
 func _build_simulation_roots() -> void:
@@ -1347,7 +1448,7 @@ func _begin_collision_recovery(
 
         collision_recovery_normal = radial
         collision_recovery_safe_radius = (
-            ASTEROID_HALF_DIAGONAL
+            asteroid.bounding_radius()
             + model_radius
             + COLLISION_RECOVERY_CLEARANCE
         )
@@ -1528,12 +1629,11 @@ func _auto_orbit_input(forward: Vector3) -> Vector2:
         * auto_orbit_direction
     )
 
-    # Conservative center-radius clearance: ASTEROID_HALF_DIAGONAL encloses
-    # the rotating 20^3 asteroid and model_collision_radius encloses the ship's
-    # rectangular collision box through any yaw angle.
+    # Conservative center-radius clearance uses the current asteroid's actual
+    # 3-to-9-cell size plus the ship collision radius.
     var clearance := (
         center_distance
-        - ASTEROID_HALF_DIAGONAL
+        - auto_orbit_target.bounding_radius()
         - model_collision_radius
     )
 
@@ -1758,54 +1858,14 @@ func _resolve_camera_obstruction(
 
 
 func _spawn_initial_asteroids() -> void:
-    var forward := _ship_forward_world()
-
-    # Keep the guaranteed first asteroid in the forward hemisphere so it is
-    # immediately useful, but randomize both bearing and distance every run.
-    var spawned := false
-    for attempt in range(ASTEROID_SPAWN_ATTEMPTS):
-        var angle_offset := asteroid_rng.randf_range(
-            deg_to_rad(-34.0),
-            deg_to_rad(34.0)
-        )
-        var direction := forward.rotated(Vector3.UP, angle_offset).normalized()
-        var distance := asteroid_rng.randf_range(
-            INITIAL_ASTEROID_FORWARD_DISTANCE - 8.0,
-            INITIAL_ASTEROID_FORWARD_DISTANCE + 24.0
-        )
-        var candidate := launch_position + direction * distance
-
-        if not _asteroid_spawn_is_clear(candidate):
-            continue
-
-        asteroid_spawn_sequence += 1
-        _spawn_asteroid(
-            "starter_%d" % asteroid_spawn_sequence,
-            candidate,
-            int(asteroid_rng.randi())
-        )
-        spawned = true
-        break
-
-    # Defensive fallback still avoids ever spawning at the ship origin.
-    if not spawned:
-        asteroid_spawn_sequence += 1
-        var fallback := (
-            launch_position
-            + forward * INITIAL_ASTEROID_FORWARD_DISTANCE
-        )
-        _spawn_asteroid(
-            "starter_%d" % asteroid_spawn_sequence,
-            fallback,
-            int(asteroid_rng.randi())
-        )
-
+    # The ship begins on the same broad orbital band as the asteroid ring.
+    # Populate the nearby arc immediately; no travel threshold is required.
     _maintain_asteroid_population()
 
 
 func _update_asteroids(delta: float) -> void:
     for asteroid in asteroids.values():
-        if is_instance_valid(asteroid):
+        if asteroid != null and is_instance_valid(asteroid):
             (asteroid as SpaceAsteroid).update_spin(delta)
 
     asteroid_update_time += delta
@@ -1828,10 +1888,9 @@ func _remove_distant_asteroids() -> void:
             ship_body.global_position
         )
 
-        # Never despawn an asteroid while the player can see it. The previous
-        # 220-cell cutoff could repeatedly remove/recreate a distant asteroid
-        # near the edge of the active area, which looked like a flickering cube
-        # and caused expensive 20^3 surface-mesh rebuild spikes.
+        # Maintain only the local portion of the enormous ring. Visible bodies
+        # are retained to avoid popping; old ring members are recycled only
+        # after they have drifted well behind the player.
         if (
             distance > ASTEROID_KEEP_DISTANCE
             and camera != null
@@ -1845,41 +1904,85 @@ func _remove_distant_asteroids() -> void:
 
 
 func _maintain_asteroid_population() -> void:
-    # Population is count-based rather than travel/sector gated. This means
-    # asteroids exist immediately even if the player sits still for minutes,
-    # while the low target count keeps the field intentionally sparse.
     var valid_count := 0
     for value in asteroids.values():
         if value != null and is_instance_valid(value):
             valid_count += 1
 
+    var ship_radial := ship_body.global_position - PLANET_CENTER
+    ship_radial.y = 0.0
+    if ship_radial.length_squared() < 0.001:
+        ship_radial = Vector3(0.0, 0.0, RING_BASE_RADIUS)
+
+    var ship_angle := atan2(ship_radial.z, ship_radial.x)
     var attempts := 0
-    while valid_count < ASTEROID_TARGET_COUNT and attempts < ASTEROID_SPAWN_ATTEMPTS:
+
+    while (
+        valid_count < ASTEROID_TARGET_COUNT
+        and attempts < ASTEROID_SPAWN_ATTEMPTS
+    ):
         attempts += 1
         asteroid_spawn_sequence += 1
 
-        var seed_value := int(asteroid_rng.randi())
-        var angle := asteroid_rng.randf_range(0.0, TAU)
-        var radius := asteroid_rng.randf_range(
-            ASTEROID_SPAWN_MIN_RADIUS,
-            ASTEROID_SPAWN_MAX_RADIUS
+        var size_value := asteroid_rng.randi_range(
+            ASTEROID_MIN_SIZE,
+            ASTEROID_MAX_SIZE
         )
-        var candidate := (
-            ship_body.global_position
-            + Vector3(cos(angle), 0.0, sin(angle)) * radius
+        var candidate_radius := (
+            sqrt(3.0) * float(size_value) * 0.5
+        )
+        var angle := ship_angle + asteroid_rng.randf_range(
+            -RING_LOCAL_ARC_HALF_WIDTH,
+            RING_LOCAL_ARC_HALF_WIDTH
+        )
+        var ring_radius := (
+            RING_BASE_RADIUS
+            + asteroid_rng.randf_range(
+                -RING_RADIAL_HALF_WIDTH,
+                RING_RADIAL_HALF_WIDTH
+            )
+        )
+        var height := asteroid_rng.randf_range(
+            -RING_VERTICAL_HALF_THICKNESS,
+            RING_VERTICAL_HALF_THICKNESS
+        )
+        var candidate := PLANET_CENTER + Vector3(
+            cos(angle) * ring_radius,
+            height,
+            sin(angle) * ring_radius
         )
 
-        if not _asteroid_spawn_is_clear(candidate):
+        if not _asteroid_spawn_is_clear(
+            candidate,
+            candidate_radius
+        ):
             continue
 
-        var key := "field_%d" % asteroid_spawn_sequence
-        _spawn_asteroid(key, candidate, seed_value)
+        var seed_value := int(asteroid_rng.randi())
+        var palette_type := (
+            "ice"
+            if asteroid_rng.randf() < 0.5
+            else "dirt"
+        )
+        var key := "ring_%d" % asteroid_spawn_sequence
+
+        _spawn_asteroid(
+            key,
+            candidate,
+            seed_value,
+            size_value,
+            palette_type,
+            ring_radius,
+            angle,
+            height
+        )
         valid_count += 1
 
 
-func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
-    # The launch bubble is permanent, while current ship/camera clearance and
-    # asteroid-to-asteroid spacing prevent overlap as replacements are spawned.
+func _asteroid_spawn_is_clear(
+    world_position: Vector3,
+    candidate_radius: float
+) -> bool:
     if (
         world_position.distance_to(launch_position)
         < ASTEROID_LAUNCH_CENTER_CLEARANCE
@@ -1887,8 +1990,8 @@ func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
         return false
 
     var ship_clearance := (
-        ASTEROID_HALF_DIAGONAL
-        + model_radius
+        candidate_radius
+        + model_collision_radius
         + ASTEROID_SPAWN_SURFACE_GAP
     )
     if world_position.distance_to(ship_body.global_position) < ship_clearance:
@@ -1896,7 +1999,7 @@ func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
 
     if camera != null:
         var camera_clearance := (
-            ASTEROID_HALF_DIAGONAL
+            candidate_radius
             + ASTEROID_SPAWN_SURFACE_GAP
         )
         if world_position.distance_to(camera.global_position) < camera_clearance:
@@ -1907,9 +2010,14 @@ func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
             continue
 
         var asteroid := value as SpaceAsteroid
+        var required_separation := (
+            candidate_radius
+            + asteroid.bounding_radius()
+            + ASTEROID_MIN_CENTER_SEPARATION
+        )
         if (
             world_position.distance_to(asteroid.global_position)
-            < ASTEROID_MIN_CENTER_SEPARATION
+            < required_separation
         ):
             return false
 
@@ -1919,14 +2027,38 @@ func _asteroid_spawn_is_clear(world_position: Vector3) -> bool:
 func _spawn_asteroid(
     key: String,
     world_position: Vector3,
-    seed_value: int
+    seed_value: int,
+    size_value: int,
+    palette_type: String,
+    ring_radius: float,
+    ring_angle: float,
+    ring_height: float
 ) -> void:
-    if not _asteroid_spawn_is_clear(world_position):
+    var candidate_radius := (
+        sqrt(3.0) * float(size_value) * 0.5
+    )
+    if not _asteroid_spawn_is_clear(
+        world_position,
+        candidate_radius
+    ):
         return
 
     var asteroid := SpaceAsteroid.new()
     asteroid.name = "Asteroid_" + key.replace(":", "_")
-    asteroid.configure(key, world_position, seed_value)
+    asteroid.configure(
+        key,
+        world_position,
+        seed_value,
+        size_value,
+        palette_type
+    )
+    asteroid.configure_orbit(
+        PLANET_CENTER,
+        ring_radius,
+        ring_angle,
+        ring_height,
+        RING_LINEAR_SPEED
+    )
     asteroid_root.add_child(asteroid)
     asteroid.set_debug_hitboxes_visible(debug_hitboxes_visible)
     asteroids[key] = asteroid
