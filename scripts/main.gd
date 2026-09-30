@@ -1020,8 +1020,7 @@ func _load_ship_model(model_id: String) -> void:
         if color_data is Array:
             for color_value in color_data:
                 colors.append(Color.from_string(str(color_value), Color.WHITE))
-        if colors.is_empty():
-            colors = PartFactory.default_colors(part_index)
+        colors = PartFactory.normalize_colors(part_index, colors)
 
         var part := PartFactory.create_part(part_index, colors, false)
         part.position = Vector3(
