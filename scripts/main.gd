@@ -39,10 +39,15 @@ var parts_panel: PanelContainer
 var parts_tab: Button
 var parts_scroll: ScrollContainer
 var part_cards: HBoxContainer
-var color_slot_select: OptionButton
+var color_slots_container: VBoxContainer
+var color_picker_dim: ColorRect
+var color_picker_panel: PanelContainer
+var color_picker_title: Label
+var color_picker_grid: GridContainer
 var color_hex_input: LineEdit
-var color_apply_button: Button
-var color_swatch_buttons: Array[Button] = []
+var color_hex_preview: Button
+var color_picker_open := false
+var color_picker_slot := 0
 var place_button: Button
 var controls_root: Control
 var dpad_root: Control
@@ -261,6 +266,7 @@ func _build_ui() -> void:
     ui_root.add_child(parts_dim)
 
     _build_parts_panel()
+    _build_color_picker_popup()
     _build_touch_controls()
     _build_gear()
     _build_ship_selector()
@@ -317,122 +323,11 @@ func _build_parts_panel() -> void:
     color_title.text = "Color"
     content.add_child(color_title)
 
-    color_slot_select = OptionButton.new()
-    color_slot_select.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    color_slot_select.item_selected.connect(_on_color_slot_selected)
-    content.add_child(color_slot_select)
-
-    var primary_row := HBoxContainer.new()
-    primary_row.add_theme_constant_override("separation", 7)
-    content.add_child(primary_row)
-
-    var primary_label := Label.new()
-    primary_label.text = "Primary"
-    primary_label.custom_minimum_size = Vector2(82.0, 38.0)
-    primary_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    primary_row.add_child(primary_label)
-
-    for spec in [
-        ["Red", Color("#e53935")],
-        ["Yellow", Color("#fdd835")],
-        ["Blue", Color("#1e88e5")],
-    ]:
-        var swatch := _make_color_swatch(
-            str(spec[0]),
-            spec[1] as Color
-        )
-        primary_row.add_child(swatch)
-
-    var secondary_row := HBoxContainer.new()
-    secondary_row.add_theme_constant_override("separation", 7)
-    content.add_child(secondary_row)
-
-    var secondary_label := Label.new()
-    secondary_label.text = "Secondary"
-    secondary_label.custom_minimum_size = Vector2(82.0, 38.0)
-    secondary_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    secondary_row.add_child(secondary_label)
-
-    for spec in [
-        ["Orange", Color("#fb8c00")],
-        ["Green", Color("#43a047")],
-        ["Purple", Color("#8e24aa")],
-    ]:
-        var swatch := _make_color_swatch(
-            str(spec[0]),
-            spec[1] as Color
-        )
-        secondary_row.add_child(swatch)
-
-    var tertiary_row := HBoxContainer.new()
-    tertiary_row.add_theme_constant_override("separation", 7)
-    content.add_child(tertiary_row)
-
-    var tertiary_label := Label.new()
-    tertiary_label.text = "Tertiary"
-    tertiary_label.custom_minimum_size = Vector2(82.0, 38.0)
-    tertiary_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    tertiary_row.add_child(tertiary_label)
-
-    for spec in [
-        ["Red-orange", Color("#f4511e")],
-        ["Yellow-orange", Color("#f9a825")],
-        ["Yellow-green", Color("#7cb342")],
-        ["Blue-green", Color("#00897b")],
-        ["Blue-violet", Color("#5e35b1")],
-        ["Red-violet", Color("#d81b60")],
-    ]:
-        var swatch := _make_color_swatch(
-            str(spec[0]),
-            spec[1] as Color
-        )
-        tertiary_row.add_child(swatch)
-
-    var neutral_row := HBoxContainer.new()
-    neutral_row.add_theme_constant_override("separation", 7)
-    content.add_child(neutral_row)
-
-    var neutral_label := Label.new()
-    neutral_label.text = "Neutral"
-    neutral_label.custom_minimum_size = Vector2(82.0, 38.0)
-    neutral_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    neutral_row.add_child(neutral_label)
-
-    for spec in [
-        ["Black", Color("#000000")],
-        ["White", Color("#ffffff")],
-    ]:
-        var swatch := _make_color_swatch(
-            str(spec[0]),
-            spec[1] as Color
-        )
-        neutral_row.add_child(swatch)
-
-    var custom_row := HBoxContainer.new()
-    custom_row.add_theme_constant_override("separation", 8)
-    content.add_child(custom_row)
-
-    var custom_label := Label.new()
-    custom_label.text = "Hex"
-    custom_label.custom_minimum_size = Vector2(82.0, 44.0)
-    custom_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-    custom_row.add_child(custom_label)
-
-    color_hex_input = LineEdit.new()
-    color_hex_input.placeholder_text = "#5F83C6"
-    color_hex_input.max_length = 9
-    color_hex_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    color_hex_input.custom_minimum_size = Vector2(128.0, 44.0)
-    color_hex_input.text_submitted.connect(
-        func(_value: String): _commit_hex_color()
-    )
-    custom_row.add_child(color_hex_input)
-
-    color_apply_button = Button.new()
-    color_apply_button.text = "Apply"
-    color_apply_button.custom_minimum_size = Vector2(72.0, 44.0)
-    color_apply_button.pressed.connect(_commit_hex_color)
-    custom_row.add_child(color_apply_button)
+    # The drawer only exposes the part's color regions. Choosing a region
+    # opens the dedicated compact color picker instead of expanding the drawer.
+    color_slots_container = VBoxContainer.new()
+    color_slots_container.add_theme_constant_override("separation", 7)
+    content.add_child(color_slots_container)
 
     var hint := Label.new()
     hint.text = "D-pad rotates the selected piece while this drawer is open. Side bumpers step through parts."
@@ -467,6 +362,176 @@ func _build_parts_panel() -> void:
     ui_root.add_child(parts_tab)
 
     _refresh_color_controls()
+
+func _build_color_picker_popup() -> void:
+    color_picker_dim = ColorRect.new()
+    color_picker_dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    color_picker_dim.color = Color(0.0, 0.0, 0.0, 0.42)
+    color_picker_dim.mouse_filter = Control.MOUSE_FILTER_STOP
+    color_picker_dim.z_index = 40
+    color_picker_dim.visible = false
+    ui_root.add_child(color_picker_dim)
+
+    color_picker_panel = PanelContainer.new()
+    color_picker_panel.set_anchors_preset(Control.PRESET_CENTER)
+    color_picker_panel.position = Vector2(-180.0, -178.0)
+    color_picker_panel.size = Vector2(360.0, 356.0)
+    color_picker_panel.z_index = 41
+    color_picker_panel.visible = false
+    ui_root.add_child(color_picker_panel)
+
+    var margin := MarginContainer.new()
+    margin.add_theme_constant_override("margin_left", 18)
+    margin.add_theme_constant_override("margin_right", 18)
+    margin.add_theme_constant_override("margin_top", 16)
+    margin.add_theme_constant_override("margin_bottom", 18)
+    color_picker_panel.add_child(margin)
+
+    var content := VBoxContainer.new()
+    content.add_theme_constant_override("separation", 12)
+    margin.add_child(content)
+
+    var header := HBoxContainer.new()
+    content.add_child(header)
+
+    color_picker_title = Label.new()
+    color_picker_title.text = "COLOR"
+    color_picker_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    color_picker_title.add_theme_font_size_override("font_size", 20)
+    header.add_child(color_picker_title)
+
+    var close_button := Button.new()
+    close_button.text = "Close"
+    close_button.pressed.connect(_close_color_picker)
+    header.add_child(close_button)
+
+    var choose_label := Label.new()
+    choose_label.text = "Choose a color"
+    choose_label.modulate.a = 0.82
+    content.add_child(choose_label)
+
+    color_picker_grid = GridContainer.new()
+    color_picker_grid.columns = 5
+    color_picker_grid.add_theme_constant_override("h_separation", 9)
+    color_picker_grid.add_theme_constant_override("v_separation", 9)
+    content.add_child(color_picker_grid)
+
+    for spec in [
+        ["Red", Color("#e53935")],
+        ["Yellow", Color("#fdd835")],
+        ["Blue", Color("#1e88e5")],
+        ["Orange", Color("#fb8c00")],
+        ["Green", Color("#43a047")],
+        ["Purple", Color("#8e24aa")],
+        ["Red-orange", Color("#f4511e")],
+        ["Yellow-orange", Color("#f9a825")],
+        ["Yellow-green", Color("#7cb342")],
+        ["Blue-green", Color("#00897b")],
+        ["Blue-violet", Color("#5e35b1")],
+        ["Red-violet", Color("#d81b60")],
+        ["Black", Color("#000000")],
+        ["White", Color("#ffffff")],
+    ]:
+        var swatch := _make_popup_color_swatch(
+            str(spec[0]),
+            spec[1] as Color
+        )
+        color_picker_grid.add_child(swatch)
+
+    var custom_label := Label.new()
+    custom_label.text = "Custom hexadecimal"
+    custom_label.modulate.a = 0.82
+    content.add_child(custom_label)
+
+    var custom_row := HBoxContainer.new()
+    custom_row.add_theme_constant_override("separation", 10)
+    content.add_child(custom_row)
+
+    color_hex_input = LineEdit.new()
+    color_hex_input.placeholder_text = "#5F83C6"
+    color_hex_input.max_length = 9
+    color_hex_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    color_hex_input.custom_minimum_size = Vector2(0.0, 46.0)
+    color_hex_input.text_changed.connect(_on_color_hex_text_changed)
+    color_hex_input.text_submitted.connect(
+        func(_value: String): _commit_hex_color()
+    )
+    custom_row.add_child(color_hex_input)
+
+    color_hex_preview = Button.new()
+    color_hex_preview.custom_minimum_size = Vector2(54.0, 46.0)
+    color_hex_preview.text = ""
+    color_hex_preview.tooltip_text = "Apply custom color"
+    color_hex_preview.pressed.connect(_commit_hex_color)
+    custom_row.add_child(color_hex_preview)
+
+
+func _make_popup_color_swatch(label: String, color: Color) -> Button:
+    var button := Button.new()
+    button.custom_minimum_size = Vector2(54.0, 48.0)
+    button.tooltip_text = label
+    button.text = ""
+    _set_color_button_style(button, color)
+    button.pressed.connect(_choose_popup_color.bind(color))
+    return button
+
+
+func _set_color_button_style(button: Button, color: Color) -> void:
+    var normal := StyleBoxFlat.new()
+    normal.bg_color = color
+    normal.border_color = Color(0.62, 0.68, 0.78, 0.90)
+    normal.set_border_width_all(2)
+    normal.set_corner_radius_all(7)
+
+    var hover := normal.duplicate() as StyleBoxFlat
+    hover.border_color = Color(1.0, 1.0, 1.0, 0.95)
+    hover.set_border_width_all(3)
+
+    var pressed := normal.duplicate() as StyleBoxFlat
+    pressed.bg_color = color.darkened(0.12)
+    pressed.border_color = Color(1.0, 1.0, 1.0, 1.0)
+    pressed.set_border_width_all(3)
+
+    button.add_theme_stylebox_override("normal", normal)
+    button.add_theme_stylebox_override("hover", hover)
+    button.add_theme_stylebox_override("pressed", pressed)
+
+
+func _open_color_picker(slot_index: int) -> void:
+    color_picker_slot = maxi(0, slot_index)
+
+    if PartFactory.is_color_tool(selected_part):
+        paint_slot = color_picker_slot
+
+    var slot_names := _current_color_slot_names()
+    var slot_name := "Color"
+    if color_picker_slot < slot_names.size():
+        slot_name = slot_names[color_picker_slot]
+
+    color_picker_title.text = "COLOR — " + slot_name
+    _set_hex_color_text(_color_for_slot(color_picker_slot))
+    _set_hex_preview_color(_color_for_slot(color_picker_slot))
+
+    color_picker_open = true
+    color_picker_dim.visible = true
+    color_picker_panel.visible = true
+    color_hex_input.grab_focus()
+
+
+func _close_color_picker() -> void:
+    color_picker_open = false
+    if color_picker_dim != null:
+        color_picker_dim.visible = false
+    if color_picker_panel != null:
+        color_picker_panel.visible = false
+    if color_hex_input != null:
+        color_hex_input.release_focus()
+
+
+func _choose_popup_color(color: Color) -> void:
+    _apply_selected_color(color)
+    _close_color_picker()
+
 
 func _rebuild_part_cards() -> void:
     if part_cards == null:
@@ -1213,7 +1278,9 @@ func _input(event: InputEvent) -> void:
     # Tab (or a remapped equivalent) from ever falling through into UI focus
     # traversal/accessibility-style navigation.
     if event.is_action_pressed(&"parts_toggle"):
-        if not menu_open and view_mode == "builder":
+        if color_picker_open:
+            _close_color_picker()
+        elif not menu_open and view_mode == "builder":
             _set_parts_open(not parts_open)
         get_viewport().set_input_as_handled()
         return
@@ -1305,6 +1372,10 @@ func _unhandled_input(event: InputEvent) -> void:
             _orbit_camera(drag.relative)
 
 func _handle_menu_back() -> void:
+    if color_picker_open:
+        _close_color_picker()
+        return
+
     if not menu_open:
         _open_menu()
         return
@@ -1850,6 +1921,8 @@ func _on_bindings_changed() -> void:
         _show_controls_menu()
 
 func _set_parts_open(value: bool) -> void:
+    if not value and color_picker_open:
+        _close_color_picker()
     parts_open = value
     parts_panel.visible = value
     parts_dim.visible = value
@@ -2223,6 +2296,8 @@ func _cycle_part(delta: int) -> void:
     _refresh_rotation_guide()
 
 func _select_part(index: int) -> void:
+    if color_picker_open:
+        _close_color_picker()
     selected_part = clampi(index, 0, PartFactory.part_count() - 1)
     part_basis = Basis.IDENTITY
     paint_slot = 0
@@ -2239,88 +2314,92 @@ func _refresh_part_action_label() -> void:
         return
     place_button.text = "Paint" if PartFactory.is_color_tool(selected_part) else "Place"
 
-func _make_color_swatch(label: String, color: Color) -> Button:
-    var button := Button.new()
-    button.custom_minimum_size = Vector2(38.0, 38.0)
-    button.tooltip_text = label
-    button.text = ""
-
-    var normal := StyleBoxFlat.new()
-    normal.bg_color = color
-    normal.border_color = Color(1.0, 1.0, 1.0, 0.35)
-    normal.set_border_width_all(2)
-    normal.set_corner_radius_all(7)
-
-    var hover := normal.duplicate() as StyleBoxFlat
-    hover.border_color = Color(1.0, 1.0, 1.0, 0.85)
-    hover.set_border_width_all(3)
-
-    var pressed := normal.duplicate() as StyleBoxFlat
-    pressed.bg_color = color.darkened(0.14)
-    pressed.border_color = Color(1.0, 1.0, 1.0, 1.0)
-    pressed.set_border_width_all(3)
-
-    button.add_theme_stylebox_override("normal", normal)
-    button.add_theme_stylebox_override("hover", hover)
-    button.add_theme_stylebox_override("pressed", pressed)
-    button.pressed.connect(_apply_simple_color.bind(color))
-    color_swatch_buttons.append(button)
-    return button
-
-
 func _refresh_color_controls() -> void:
-    if color_slot_select == null or color_hex_input == null:
+    if color_slots_container == null:
         return
 
-    color_slot_select.clear()
-    color_slot_select.disabled = false
-    _set_simple_color_controls_disabled(false)
+    for child in color_slots_container.get_children():
+        child.queue_free()
 
+    var slot_names := _current_color_slot_names()
+    if slot_names.is_empty():
+        var empty := Button.new()
+        empty.text = (
+            "No part selected"
+            if PartFactory.is_color_tool(selected_part)
+            else "No color regions"
+        )
+        empty.disabled = true
+        color_slots_container.add_child(empty)
+        _close_color_picker()
+        return
+
+    for index in range(slot_names.size()):
+        var color := _color_for_slot(index)
+        var button := Button.new()
+        button.text = "%s    #%s" % [
+            slot_names[index],
+            color.to_html(false).to_upper(),
+        ]
+        button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+        button.custom_minimum_size = Vector2(0.0, 44.0)
+        button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        button.pressed.connect(_open_color_picker.bind(index))
+
+        var normal := StyleBoxFlat.new()
+        normal.bg_color = Color(0.08, 0.11, 0.16, 0.16)
+        normal.border_color = color
+        normal.set_border_width_all(2)
+        normal.set_corner_radius_all(8)
+        var hover := normal.duplicate() as StyleBoxFlat
+        hover.bg_color = Color(color.r, color.g, color.b, 0.13)
+        var pressed := normal.duplicate() as StyleBoxFlat
+        pressed.bg_color = Color(color.r, color.g, color.b, 0.22)
+
+        button.add_theme_stylebox_override("normal", normal)
+        button.add_theme_stylebox_override("hover", hover)
+        button.add_theme_stylebox_override("pressed", pressed)
+        color_slots_container.add_child(button)
+
+
+func _current_color_slot_names() -> Array[String]:
     if PartFactory.is_color_tool(selected_part):
         var target := _current_placed_part()
         if target == null:
-            color_slot_select.add_item("No part selected")
-            color_slot_select.disabled = true
-            _set_simple_color_controls_disabled(true)
-            _set_hex_color_text(paint_color)
-            return
+            return []
 
         var target_index := int(target.get_meta("part_index", -1))
         if target_index < 0:
-            color_slot_select.add_item("No color regions")
-            color_slot_select.disabled = true
-            _set_simple_color_controls_disabled(true)
-            return
+            return []
 
-        for slot_name in PartFactory.color_slot_names(target_index):
-            color_slot_select.add_item(slot_name)
-        if color_slot_select.item_count > 0:
-            paint_slot = clampi(
-                paint_slot,
-                0,
-                color_slot_select.item_count - 1
-            )
-            color_slot_select.select(paint_slot)
-        _set_hex_color_text(paint_color)
-        return
+        return PartFactory.color_slot_names(target_index)
 
-    for slot_name in PartFactory.color_slot_names(selected_part):
-        color_slot_select.add_item(slot_name)
-
-    if color_slot_select.item_count > 0:
-        color_slot_select.select(0)
-        var colors: Array = part_colors[selected_part]
-        _set_hex_color_text(colors[0] as Color)
+    return PartFactory.color_slot_names(selected_part)
 
 
-func _set_simple_color_controls_disabled(value: bool) -> void:
-    if color_hex_input != null:
-        color_hex_input.editable = not value
-    if color_apply_button != null:
-        color_apply_button.disabled = value
-    for button in color_swatch_buttons:
-        if button != null:
-            button.disabled = value
+func _color_for_slot(slot_index: int) -> Color:
+    if PartFactory.is_color_tool(selected_part):
+        var target := _current_placed_part()
+        if target == null:
+            return paint_color
+
+        var target_index := int(target.get_meta("part_index", -1))
+        if target_index < 0:
+            return paint_color
+
+        var stored: Array = target.get_meta(
+            "colors",
+            PartFactory.default_colors(target_index)
+        )
+        if slot_index >= 0 and slot_index < stored.size():
+            return stored[slot_index] as Color
+        return paint_color
+
+    var colors: Array = part_colors[selected_part]
+    if slot_index >= 0 and slot_index < colors.size():
+        return colors[slot_index] as Color
+
+    return Color("#5f83c6")
 
 
 func _set_hex_color_text(color: Color) -> void:
@@ -2329,74 +2408,68 @@ func _set_hex_color_text(color: Color) -> void:
     color_hex_input.text = "#" + color.to_html(false).to_upper()
 
 
-func _on_color_slot_selected(index: int) -> void:
-    if PartFactory.is_color_tool(selected_part):
-        paint_slot = index
-        _set_hex_color_text(paint_color)
+func _parse_hex_color(text_value: String) -> Dictionary:
+    var raw := text_value.strip_edges()
+    if raw.begins_with("#"):
+        raw = raw.substr(1)
+
+    if raw.length() != 6 and raw.length() != 8:
+        return {"valid": false}
+
+    for character in raw.to_upper():
+        if character not in "0123456789ABCDEF":
+            return {"valid": false}
+
+    return {
+        "valid": true,
+        "color": Color.from_string(
+            "#" + raw,
+            _color_for_slot(color_picker_slot)
+        ),
+    }
+
+
+func _on_color_hex_text_changed(value: String) -> void:
+    var parsed := _parse_hex_color(value)
+    if not bool(parsed.get("valid", false)):
         return
-
-    var colors: Array = part_colors[selected_part]
-    if index >= 0 and index < colors.size():
-        _set_hex_color_text(colors[index] as Color)
+    _set_hex_preview_color(parsed.get("color", Color.WHITE) as Color)
 
 
-func _apply_simple_color(color: Color) -> void:
-    _apply_selected_color(color)
-    _set_hex_color_text(color)
+func _set_hex_preview_color(color: Color) -> void:
+    if color_hex_preview == null:
+        return
+    _set_color_button_style(color_hex_preview, color)
 
 
 func _commit_hex_color() -> void:
     if color_hex_input == null:
         return
 
-    var raw := color_hex_input.text.strip_edges()
-    if raw.begins_with("#"):
-        raw = raw.substr(1)
-
-    # Keep custom entry intentionally simple: RGB or RGBA hexadecimal only.
-    if raw.length() != 6 and raw.length() != 8:
-        _set_hex_color_text(_current_selected_color())
+    var parsed := _parse_hex_color(color_hex_input.text)
+    if not bool(parsed.get("valid", false)):
+        _set_hex_color_text(_color_for_slot(color_picker_slot))
+        _set_hex_preview_color(_color_for_slot(color_picker_slot))
         return
 
-    for character in raw.to_upper():
-        if character not in "0123456789ABCDEF":
-            _set_hex_color_text(_current_selected_color())
-            return
-
-    var color := Color.from_string("#" + raw, _current_selected_color())
-    _apply_selected_color(color)
-    _set_hex_color_text(color)
-
-
-func _current_selected_color() -> Color:
-    if PartFactory.is_color_tool(selected_part):
-        return paint_color
-
-    var colors: Array = part_colors[selected_part]
-    var slot := (
-        color_slot_select.selected
-        if color_slot_select != null
-        else 0
-    )
-    if slot >= 0 and slot < colors.size():
-        return colors[slot] as Color
-
-    return Color("#5f83c6")
+    _apply_selected_color(parsed.get("color", Color.WHITE) as Color)
+    _close_color_picker()
 
 
 func _apply_selected_color(color: Color) -> void:
     if PartFactory.is_color_tool(selected_part):
+        paint_slot = color_picker_slot
         paint_color = color
         return
 
-    var slot := color_slot_select.selected
     var colors: Array = part_colors[selected_part]
-    if slot < 0 or slot >= colors.size():
+    if color_picker_slot < 0 or color_picker_slot >= colors.size():
         return
 
-    colors[slot] = color
+    colors[color_picker_slot] = color
     part_colors[selected_part] = colors
     _refresh_ghost()
+    _refresh_color_controls()
 
 
 func _refresh_ghost() -> void:
@@ -2566,13 +2639,7 @@ func _apply_color_tool() -> void:
     if colors.is_empty():
         return
 
-    # The OptionButton is the authoritative source for the color region at the
-    # moment Paint is pressed. Keeping only a cached index allowed the UI label
-    # and the slot actually painted to get out of sync.
-    var selected_slot := color_slot_select.selected
-    if selected_slot < 0 or selected_slot >= colors.size():
-        selected_slot = clampi(paint_slot, 0, colors.size() - 1)
-
+    var selected_slot := clampi(paint_slot, 0, colors.size() - 1)
     paint_slot = selected_slot
     colors[selected_slot] = paint_color
     target.set_meta("colors", colors.duplicate())
