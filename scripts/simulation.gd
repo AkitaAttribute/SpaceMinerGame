@@ -1872,12 +1872,10 @@ func _update_asteroids(delta: float) -> void:
     var detail_distance := _asteroid_detail_distance()
 
     asteroid_render_update_time += delta
-    var update_far := (
+    var update_far_physics := (
         asteroid_render_update_time >= FAR_RING_UPDATE_INTERVAL
     )
-    var far_delta := asteroid_render_update_time if update_far else 0.0
-
-    if update_far:
+    if update_far_physics:
         asteroid_render_update_time = 0.0
 
     for asteroid_value in asteroids.values():
@@ -1890,16 +1888,15 @@ func _update_asteroids(delta: float) -> void:
         )
 
         if distance <= detail_distance:
-            # This is intentionally the exact pre-optimization behavior for
-            # nearby asteroids: real mesh, real transform, orbit + rotation
-            # updated every frame.
+            # Nearby asteroids retain the original full update path.
             asteroid.update_spin(delta)
-        elif update_far:
-            # Only distant belt members use throttled orbital updates.
-            # Cosmetic rotation is intentionally frozen at this distance.
-            asteroid.update_far_orbit(far_delta)
+        else:
+            # Far asteroids still move every frame so render/frustum state
+            # cannot lag behind their real orbital position. Only cosmetic
+            # spin and physics are reduced at distance.
+            asteroid.update_far_orbit(delta)
 
-        if update_far:
+        if update_far_physics:
             asteroid.set_collision_active(
                 distance <= ASTEROID_PHYSICS_ACTIVE_DISTANCE
             )
@@ -1933,42 +1930,85 @@ func _populate_full_asteroid_ring() -> void:
             sqrt(3.0) * float(size_value) * 0.5
         )
 
-        # Even slots guarantee coverage around all 360 degrees. A small random
-        # offset prevents the field from looking mechanically uniform.
-        var jitter := asteroid_rng.randf_range(
-            -slot_angle * RING_SLOT_JITTER,
-            slot_angle * RING_SLOT_JITTER
-        )
-        var angle := fposmod(
-            phase + float(slot) * slot_angle + jitter,
+        # Every angular slot must produce one asteroid. We retry radial and
+        # vertical lanes instead of dropping the slot, so no permanent arc can
+        # disappear from the ring.
+        var base_angle := fposmod(
+            phase + float(slot) * slot_angle,
             TAU
         )
+        var chosen_position := Vector3.ZERO
+        var chosen_radius := RING_BASE_RADIUS
+        var chosen_height := 0.0
+        var chosen_angle := base_angle
+        var found := false
 
-        var ring_radius := (
-            RING_BASE_RADIUS
-            + asteroid_rng.randf_range(
-                -RING_RADIAL_HALF_WIDTH,
-                RING_RADIAL_HALF_WIDTH
+        for attempt in range(12):
+            var jitter_scale := (
+                RING_SLOT_JITTER
+                if attempt < 8
+                else RING_SLOT_JITTER * 0.35
             )
-        )
-        var height := asteroid_rng.randf_range(
-            -RING_VERTICAL_HALF_THICKNESS,
-            RING_VERTICAL_HALF_THICKNESS
-        )
-        var candidate := PLANET_CENTER + Vector3(
-            cos(angle) * ring_radius,
-            height,
-            sin(angle) * ring_radius
-        )
+            var angle := fposmod(
+                base_angle
+                + asteroid_rng.randf_range(
+                    -slot_angle * jitter_scale,
+                    slot_angle * jitter_scale
+                ),
+                TAU
+            )
 
-        # A slot may be skipped if its randomized width/height would overlap
-        # another asteroid or the launch bubble. The neighboring slots still
-        # preserve continuous ring coverage.
-        if not _asteroid_spawn_is_clear(
-            candidate,
-            candidate_radius
-        ):
-            continue
+            var radial_lane := (
+                RING_BASE_RADIUS
+                + asteroid_rng.randf_range(
+                    -RING_RADIAL_HALF_WIDTH,
+                    RING_RADIAL_HALF_WIDTH
+                )
+            )
+            var height := asteroid_rng.randf_range(
+                -RING_VERTICAL_HALF_THICKNESS,
+                RING_VERTICAL_HALF_THICKNESS
+            )
+            var candidate := PLANET_CENTER + Vector3(
+                cos(angle) * radial_lane,
+                height,
+                sin(angle) * radial_lane
+            )
+
+            if not _asteroid_spawn_is_clear(
+                candidate,
+                candidate_radius
+            ):
+                continue
+
+            chosen_position = candidate
+            chosen_radius = radial_lane
+            chosen_height = height
+            chosen_angle = angle
+            found = true
+            break
+
+        if not found:
+            # A crowded or launch-adjacent slot still gets an asteroid. Move
+            # it to a deterministic outer/inner lane instead of leaving a
+            # visible hole in the ring.
+            var lane_sign := -1.0 if slot % 2 == 0 else 1.0
+            chosen_radius = (
+                RING_BASE_RADIUS
+                + lane_sign
+                * (RING_RADIAL_HALF_WIDTH + 24.0)
+            )
+            chosen_height = (
+                -RING_VERTICAL_HALF_THICKNESS
+                if slot % 3 == 0
+                else RING_VERTICAL_HALF_THICKNESS
+            )
+            chosen_angle = base_angle
+            chosen_position = PLANET_CENTER + Vector3(
+                cos(chosen_angle) * chosen_radius,
+                chosen_height,
+                sin(chosen_angle) * chosen_radius
+            )
 
         var seed_value := int(asteroid_rng.randi())
         var palette_type := (
@@ -1980,14 +2020,20 @@ func _populate_full_asteroid_ring() -> void:
 
         _spawn_asteroid(
             key,
-            candidate,
+            chosen_position,
             seed_value,
             size_value,
             palette_type,
-            ring_radius,
-            angle,
-            height
+            chosen_radius,
+            chosen_angle,
+            chosen_height,
+            true
         )
+
+    AppLogger.event(
+        "RING populated requested=%d actual=%d"
+        % [RING_ASTEROID_COUNT, asteroids.size()]
+    )
 
 
 func _asteroid_spawn_is_clear(
@@ -2043,16 +2089,18 @@ func _spawn_asteroid(
     palette_type: String,
     ring_radius: float,
     ring_angle: float,
-    ring_height: float
+    ring_height: float,
+    guaranteed_slot := false
 ) -> void:
-    var candidate_radius := (
-        sqrt(3.0) * float(size_value) * 0.5
-    )
-    if not _asteroid_spawn_is_clear(
-        world_position,
-        candidate_radius
-    ):
-        return
+    if not guaranteed_slot:
+        var candidate_radius := (
+            sqrt(3.0) * float(size_value) * 0.5
+        )
+        if not _asteroid_spawn_is_clear(
+            world_position,
+            candidate_radius
+        ):
+            return
 
     var asteroid := SpaceAsteroid.new()
     asteroid.name = "Asteroid_" + key.replace(":", "_")
