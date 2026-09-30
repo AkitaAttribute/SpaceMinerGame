@@ -574,6 +574,17 @@ func _build_visual() -> void:
     _visual = MeshInstance3D.new()
     _visual.name = "AsteroidSurface"
     _visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+
+    # Keep asteroid visibility independent from occlusion heuristics. These
+    # meshes are small relative to the full 7,000-unit camera range, so an
+    # explicit conservative cull box avoids angle-dependent popping.
+    var half_extent := float(grid_size) * CELL_SIZE * 0.5
+    _visual.custom_aabb = AABB(
+        Vector3.ONE * -half_extent,
+        Vector3.ONE * (half_extent * 2.0)
+    )
+    _visual.extra_cull_margin = 12.0
+    _visual.ignore_occlusion_culling = true
     add_child(_visual)
 
 
