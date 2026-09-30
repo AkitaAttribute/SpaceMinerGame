@@ -364,6 +364,50 @@ func _build_parts_panel() -> void:
         )
         secondary_row.add_child(swatch)
 
+    var tertiary_row := HBoxContainer.new()
+    tertiary_row.add_theme_constant_override("separation", 7)
+    content.add_child(tertiary_row)
+
+    var tertiary_label := Label.new()
+    tertiary_label.text = "Tertiary"
+    tertiary_label.custom_minimum_size = Vector2(82.0, 38.0)
+    tertiary_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    tertiary_row.add_child(tertiary_label)
+
+    for spec in [
+        ["Red-orange", Color("#f4511e")],
+        ["Yellow-orange", Color("#f9a825")],
+        ["Yellow-green", Color("#7cb342")],
+        ["Blue-green", Color("#00897b")],
+        ["Blue-violet", Color("#5e35b1")],
+        ["Red-violet", Color("#d81b60")],
+    ]:
+        var swatch := _make_color_swatch(
+            str(spec[0]),
+            spec[1] as Color
+        )
+        tertiary_row.add_child(swatch)
+
+    var neutral_row := HBoxContainer.new()
+    neutral_row.add_theme_constant_override("separation", 7)
+    content.add_child(neutral_row)
+
+    var neutral_label := Label.new()
+    neutral_label.text = "Neutral"
+    neutral_label.custom_minimum_size = Vector2(82.0, 38.0)
+    neutral_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    neutral_row.add_child(neutral_label)
+
+    for spec in [
+        ["Black", Color("#000000")],
+        ["White", Color("#ffffff")],
+    ]:
+        var swatch := _make_color_swatch(
+            str(spec[0]),
+            spec[1] as Color
+        )
+        neutral_row.add_child(swatch)
+
     var custom_row := HBoxContainer.new()
     custom_row.add_theme_constant_override("separation", 8)
     content.add_child(custom_row)
