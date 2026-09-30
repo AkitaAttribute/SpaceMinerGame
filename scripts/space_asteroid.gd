@@ -101,32 +101,32 @@ func configure_orbit(
     _update_orbit_position()
 
 
-func update_simulation(delta: float, high_detail: bool) -> void:
+func update_spin(delta: float) -> void:
     if orbit_enabled:
         orbit_angle = fposmod(
             orbit_angle + (orbit_linear_speed / orbit_radius) * delta,
             TAU
         )
-
-        # Near asteroids keep their physics/render transform fully current.
-        # Far asteroids still advance analytically but their Node3D transform
-        # is synchronized at the ring LOD cadence by the simulation manager.
-        if high_detail:
-            _update_orbit_position()
-
-    if high_detail:
-        rotate(spin_axis, spin_speed * delta)
-
-
-func sync_orbit_position() -> void:
-    if orbit_enabled:
         _update_orbit_position()
+
+    rotate(spin_axis, spin_speed * delta)
+
+
+func update_far_orbit(delta: float) -> void:
+    if not orbit_enabled:
+        return
+
+    orbit_angle = fposmod(
+        orbit_angle + (orbit_linear_speed / orbit_radius) * delta,
+        TAU
+    )
+    _update_orbit_position()
 
 
 func set_collision_active(value: bool) -> void:
     for collision_shape in _collision_shapes:
         if collision_shape != null and is_instance_valid(collision_shape):
-            collision_shape.disabled = not value
+            collision_shape.set_deferred("disabled", not value)
 
 
 func _update_orbit_position() -> void:
@@ -569,7 +569,7 @@ func _build_visual() -> void:
     _surface_material.vertex_color_use_as_albedo = true
     _surface_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
     _surface_material.roughness = 1.0
-    _surface_material.cull_mode = BaseMaterial3D.CULL_BACK
+    _surface_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 
     _visual = MeshInstance3D.new()
     _visual.name = "AsteroidSurface"
