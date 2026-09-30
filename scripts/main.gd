@@ -40,7 +40,9 @@ var parts_tab: Button
 var parts_scroll: ScrollContainer
 var part_cards: HBoxContainer
 var color_slot_select: OptionButton
-var color_picker: ColorPickerButton
+var color_hex_input: LineEdit
+var color_apply_button: Button
+var color_swatch_buttons: Array[Button] = []
 var place_button: Button
 var controls_root: Control
 var dpad_root: Control
@@ -315,19 +317,78 @@ func _build_parts_panel() -> void:
     color_title.text = "Color"
     content.add_child(color_title)
 
-    var color_row := HBoxContainer.new()
-    color_row.add_theme_constant_override("separation", 8)
-    content.add_child(color_row)
-
     color_slot_select = OptionButton.new()
     color_slot_select.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     color_slot_select.item_selected.connect(_on_color_slot_selected)
-    color_row.add_child(color_slot_select)
+    content.add_child(color_slot_select)
 
-    color_picker = ColorPickerButton.new()
-    color_picker.custom_minimum_size = Vector2(58.0, 44.0)
-    color_picker.color_changed.connect(_on_color_changed)
-    color_row.add_child(color_picker)
+    var primary_row := HBoxContainer.new()
+    primary_row.add_theme_constant_override("separation", 7)
+    content.add_child(primary_row)
+
+    var primary_label := Label.new()
+    primary_label.text = "Primary"
+    primary_label.custom_minimum_size = Vector2(82.0, 38.0)
+    primary_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    primary_row.add_child(primary_label)
+
+    for spec in [
+        ["Red", Color("#e53935")],
+        ["Yellow", Color("#fdd835")],
+        ["Blue", Color("#1e88e5")],
+    ]:
+        var swatch := _make_color_swatch(
+            str(spec[0]),
+            spec[1] as Color
+        )
+        primary_row.add_child(swatch)
+
+    var secondary_row := HBoxContainer.new()
+    secondary_row.add_theme_constant_override("separation", 7)
+    content.add_child(secondary_row)
+
+    var secondary_label := Label.new()
+    secondary_label.text = "Secondary"
+    secondary_label.custom_minimum_size = Vector2(82.0, 38.0)
+    secondary_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    secondary_row.add_child(secondary_label)
+
+    for spec in [
+        ["Orange", Color("#fb8c00")],
+        ["Green", Color("#43a047")],
+        ["Purple", Color("#8e24aa")],
+    ]:
+        var swatch := _make_color_swatch(
+            str(spec[0]),
+            spec[1] as Color
+        )
+        secondary_row.add_child(swatch)
+
+    var custom_row := HBoxContainer.new()
+    custom_row.add_theme_constant_override("separation", 8)
+    content.add_child(custom_row)
+
+    var custom_label := Label.new()
+    custom_label.text = "Hex"
+    custom_label.custom_minimum_size = Vector2(82.0, 44.0)
+    custom_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    custom_row.add_child(custom_label)
+
+    color_hex_input = LineEdit.new()
+    color_hex_input.placeholder_text = "#5F83C6"
+    color_hex_input.max_length = 9
+    color_hex_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    color_hex_input.custom_minimum_size = Vector2(128.0, 44.0)
+    color_hex_input.text_submitted.connect(
+        func(_value: String): _commit_hex_color()
+    )
+    custom_row.add_child(color_hex_input)
+
+    color_apply_button = Button.new()
+    color_apply_button.text = "Apply"
+    color_apply_button.custom_minimum_size = Vector2(72.0, 44.0)
+    color_apply_button.pressed.connect(_commit_hex_color)
+    custom_row.add_child(color_apply_button)
 
     var hint := Label.new()
     hint.text = "D-pad rotates the selected piece while this drawer is open. Side bumpers step through parts."
@@ -2134,53 +2195,152 @@ func _refresh_part_action_label() -> void:
         return
     place_button.text = "Paint" if PartFactory.is_color_tool(selected_part) else "Place"
 
+func _make_color_swatch(label: String, color: Color) -> Button:
+    var button := Button.new()
+    button.custom_minimum_size = Vector2(38.0, 38.0)
+    button.tooltip_text = label
+    button.text = ""
+
+    var normal := StyleBoxFlat.new()
+    normal.bg_color = color
+    normal.border_color = Color(1.0, 1.0, 1.0, 0.35)
+    normal.set_border_width_all(2)
+    normal.set_corner_radius_all(7)
+
+    var hover := normal.duplicate() as StyleBoxFlat
+    hover.border_color = Color(1.0, 1.0, 1.0, 0.85)
+    hover.set_border_width_all(3)
+
+    var pressed := normal.duplicate() as StyleBoxFlat
+    pressed.bg_color = color.darkened(0.14)
+    pressed.border_color = Color(1.0, 1.0, 1.0, 1.0)
+    pressed.set_border_width_all(3)
+
+    button.add_theme_stylebox_override("normal", normal)
+    button.add_theme_stylebox_override("hover", hover)
+    button.add_theme_stylebox_override("pressed", pressed)
+    button.pressed.connect(_apply_simple_color.bind(color))
+    color_swatch_buttons.append(button)
+    return button
+
+
 func _refresh_color_controls() -> void:
-    if color_slot_select == null or color_picker == null:
+    if color_slot_select == null or color_hex_input == null:
         return
 
     color_slot_select.clear()
     color_slot_select.disabled = false
-    color_picker.disabled = false
+    _set_simple_color_controls_disabled(false)
 
     if PartFactory.is_color_tool(selected_part):
         var target := _current_placed_part()
         if target == null:
             color_slot_select.add_item("No part selected")
             color_slot_select.disabled = true
-            color_picker.color = paint_color
+            _set_simple_color_controls_disabled(true)
+            _set_hex_color_text(paint_color)
             return
 
         var target_index := int(target.get_meta("part_index", -1))
         if target_index < 0:
             color_slot_select.add_item("No color regions")
             color_slot_select.disabled = true
+            _set_simple_color_controls_disabled(true)
             return
 
         for slot_name in PartFactory.color_slot_names(target_index):
             color_slot_select.add_item(slot_name)
         if color_slot_select.item_count > 0:
-            paint_slot = clampi(paint_slot, 0, color_slot_select.item_count - 1)
+            paint_slot = clampi(
+                paint_slot,
+                0,
+                color_slot_select.item_count - 1
+            )
             color_slot_select.select(paint_slot)
-        color_picker.color = paint_color
+        _set_hex_color_text(paint_color)
         return
 
     for slot_name in PartFactory.color_slot_names(selected_part):
         color_slot_select.add_item(slot_name)
+
     if color_slot_select.item_count > 0:
         color_slot_select.select(0)
         var colors: Array = part_colors[selected_part]
-        color_picker.color = colors[0]
+        _set_hex_color_text(colors[0] as Color)
+
+
+func _set_simple_color_controls_disabled(value: bool) -> void:
+    if color_hex_input != null:
+        color_hex_input.editable = not value
+    if color_apply_button != null:
+        color_apply_button.disabled = value
+    for button in color_swatch_buttons:
+        if button != null:
+            button.disabled = value
+
+
+func _set_hex_color_text(color: Color) -> void:
+    if color_hex_input == null:
+        return
+    color_hex_input.text = "#" + color.to_html(false).to_upper()
+
 
 func _on_color_slot_selected(index: int) -> void:
     if PartFactory.is_color_tool(selected_part):
         paint_slot = index
+        _set_hex_color_text(paint_color)
         return
 
     var colors: Array = part_colors[selected_part]
     if index >= 0 and index < colors.size():
-        color_picker.color = colors[index]
+        _set_hex_color_text(colors[index] as Color)
 
-func _on_color_changed(color: Color) -> void:
+
+func _apply_simple_color(color: Color) -> void:
+    _apply_selected_color(color)
+    _set_hex_color_text(color)
+
+
+func _commit_hex_color() -> void:
+    if color_hex_input == null:
+        return
+
+    var raw := color_hex_input.text.strip_edges()
+    if raw.begins_with("#"):
+        raw = raw.substr(1)
+
+    # Keep custom entry intentionally simple: RGB or RGBA hexadecimal only.
+    if raw.length() != 6 and raw.length() != 8:
+        _set_hex_color_text(_current_selected_color())
+        return
+
+    for character in raw.to_upper():
+        if character not in "0123456789ABCDEF":
+            _set_hex_color_text(_current_selected_color())
+            return
+
+    var color := Color.from_string("#" + raw, _current_selected_color())
+    _apply_selected_color(color)
+    _set_hex_color_text(color)
+
+
+func _current_selected_color() -> Color:
+    if PartFactory.is_color_tool(selected_part):
+        return paint_color
+
+    var colors: Array = part_colors[selected_part]
+    var slot := (
+        color_slot_select.selected
+        if color_slot_select != null
+        else 0
+    )
+    if slot >= 0 and slot < colors.size():
+        return colors[slot] as Color
+
+    return Color("#5f83c6")
+
+
+func _apply_selected_color(color: Color) -> void:
     if PartFactory.is_color_tool(selected_part):
         paint_color = color
         return
@@ -2189,9 +2349,11 @@ func _on_color_changed(color: Color) -> void:
     var colors: Array = part_colors[selected_part]
     if slot < 0 or slot >= colors.size():
         return
+
     colors[slot] = color
     part_colors[selected_part] = colors
     _refresh_ghost()
+
 
 func _refresh_ghost() -> void:
     if ghost_root == null:
