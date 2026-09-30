@@ -73,8 +73,8 @@ const PARTS := [
     {
         "id": "mining_laser",
         "name": "Mining Laser",
-        "slots": ["Housing"],
-        "defaults": [DEFAULT_PART_COLOR],
+        "slots": ["Housing", "Turret"],
+        "defaults": [DEFAULT_PART_COLOR, THRUSTER_CONE_COLOR],
         "rotation_reference": Vector3(0.0, -1.0, 0.0),
         "functional": true,
     },
@@ -113,6 +113,7 @@ static func occupied_offsets(index: int) -> Array[Vector3i]:
 
 static func create_part(index: int, colors: Array[Color], ghost := false) -> Node3D:
     var definition := get_definition(index)
+    colors = normalize_colors(index, colors)
     var root := Node3D.new()
     root.name = str(definition["name"]).replace(" ", "")
     root.set_meta("part_index", index)
@@ -148,6 +149,18 @@ static func default_colors(index: int) -> Array[Color]:
     var result: Array[Color] = []
     for value in definition["defaults"]:
         result.append(value as Color)
+    return result
+
+static func normalize_colors(
+    index: int,
+    values: Array[Color]
+) -> Array[Color]:
+    var defaults := default_colors(index)
+    var result: Array[Color] = values.duplicate()
+
+    while result.size() < defaults.size():
+        result.append(defaults[result.size()])
+
     return result
 
 static func color_slot_names(index: int) -> Array[String]:
@@ -292,9 +305,9 @@ static func _add_mining_laser(root: Node3D, colors: Array[Color], ghost: bool) -
     _add_mesh(
         pivot,
         barrel,
-        colors[0],
+        colors[1],
         ghost,
-        0,
+        1,
         Vector3(0.0, 0.21, 0.0)
     )
 
