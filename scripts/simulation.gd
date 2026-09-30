@@ -1871,31 +1871,14 @@ func _spawn_initial_asteroids() -> void:
 func _update_asteroids(delta: float) -> void:
     var detail_distance := _asteroid_detail_distance()
 
-    # Every asteroid keeps its real world-space model. Near asteroids update
-    # orbital motion and gentle spin every frame. Far asteroids keep advancing
-    # analytically, but only push their orbital transform at the slower LOD
-    # cadence and do not spend per-frame work on cosmetic rotation.
-    for asteroid_value in asteroids.values():
-        if asteroid_value == null or not is_instance_valid(asteroid_value):
-            continue
-
-        var asteroid := asteroid_value as SpaceAsteroid
-        var distance := ship_body.global_position.distance_to(
-            asteroid.global_position
-        )
-        asteroid.update_simulation(
-            delta,
-            distance <= detail_distance
-        )
-
     asteroid_render_update_time += delta
-    if asteroid_render_update_time < FAR_RING_UPDATE_INTERVAL:
-        return
-
-    asteroid_render_update_time = fmod(
-        asteroid_render_update_time,
-        FAR_RING_UPDATE_INTERVAL
+    var update_far := (
+        asteroid_render_update_time >= FAR_RING_UPDATE_INTERVAL
     )
+    var far_delta := asteroid_render_update_time if update_far else 0.0
+
+    if update_far:
+        asteroid_render_update_time = 0.0
 
     for asteroid_value in asteroids.values():
         if asteroid_value == null or not is_instance_valid(asteroid_value):
@@ -1906,15 +1889,20 @@ func _update_asteroids(delta: float) -> void:
             asteroid.global_position
         )
 
-        if distance > detail_distance:
-            asteroid.sync_orbit_position()
+        if distance <= detail_distance:
+            # This is intentionally the exact pre-optimization behavior for
+            # nearby asteroids: real mesh, real transform, orbit + rotation
+            # updated every frame.
+            asteroid.update_spin(delta)
+        elif update_far:
+            # Only distant belt members use throttled orbital updates.
+            # Cosmetic rotation is intentionally frozen at this distance.
+            asteroid.update_far_orbit(far_delta)
 
-        # Far belt objects never need active physics bodies. Their visual
-        # models remain rendered normally; collision wakes well before the ship
-        # can reach mining/collision distance.
-        asteroid.set_collision_active(
-            distance <= ASTEROID_PHYSICS_ACTIVE_DISTANCE
-        )
+        if update_far:
+            asteroid.set_collision_active(
+                distance <= ASTEROID_PHYSICS_ACTIVE_DISTANCE
+            )
 
 
 func _asteroid_detail_distance() -> float:
