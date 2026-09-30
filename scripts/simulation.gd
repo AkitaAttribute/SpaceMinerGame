@@ -2215,7 +2215,12 @@ func _update_mining_lasers(delta: float) -> void:
             or beam == null
             or not is_instance_valid(beam)
         ):
-            _set_laser_status(laser_index, false, "Error")
+            _set_laser_hard_error(
+                laser_index,
+                laser,
+                "missing pivot or beam node"
+            )
+            mining_lasers[laser_index] = laser
             continue
 
         if chunk != null and is_instance_valid(chunk):
@@ -2234,13 +2239,14 @@ func _update_mining_lasers(delta: float) -> void:
 
         var target = laser.get("target", null)
         if not _laser_target_in_range(target, laser):
-            target = _choose_laser_target(laser)
+            target = _choose_laser_target(laser, laser_index)
             laser["target"] = target
             laser["fire_time"] = 0.0
             laser["reserved_cell"] = null
             laser["prepared_detach"] = {}
 
         if target == null or not is_instance_valid(target):
+            _clear_laser_hard_error(laser)
             _set_laser_status(laser_index, false, "Out of Range")
             # Hold the turret exactly where it was when range was lost. Do not
             # return to its construction/rest orientation.
@@ -2253,7 +2259,11 @@ func _update_mining_lasers(delta: float) -> void:
 
         var asteroid := target as SpaceAsteroid
         if asteroid == null:
-            _set_laser_status(laser_index, false, "Error")
+            _set_laser_hard_error(
+                laser_index,
+                laser,
+                "target was not a SpaceAsteroid"
+            )
             beam.visible = false
             laser["fire_time"] = 0.0
             laser["reserved_cell"] = null
@@ -2275,8 +2285,27 @@ func _update_mining_lasers(delta: float) -> void:
                 exclusions
             )
             if selection.is_empty():
-                _set_laser_status(laser_index, false, "Error")
+                laser["reserved_cell"] = null
+                laser["prepared_detach"] = {}
+                laser["fire_time"] = 0.0
                 beam.visible = false
+
+                var replacement := _choose_laser_target(
+                    laser,
+                    laser_index,
+                    asteroid
+                ) as SpaceAsteroid
+
+                if replacement != null:
+                    laser["target"] = replacement
+                else:
+                    # Another laser may currently own every usable cell on this
+                    # target. This is a normal queue state, not an error. Keep
+                    # the current target and retry as reservations clear.
+                    laser["target"] = asteroid
+
+                _clear_laser_hard_error(laser)
+                _set_laser_status(laser_index, true, "")
                 mining_lasers[laser_index] = laser
                 continue
 
@@ -2340,6 +2369,7 @@ func _update_mining_lasers(delta: float) -> void:
         if blocked:
             var replacement := _choose_laser_target(
                 laser,
+                laser_index,
                 asteroid
             ) as SpaceAsteroid
 
@@ -2361,6 +2391,7 @@ func _update_mining_lasers(delta: float) -> void:
             laser["fire_time"] = 0.0
             laser["prepared_detach"] = {}
         else:
+            _clear_laser_hard_error(laser)
             _set_laser_status(laser_index, true, "")
 
             var already_firing := fire_time > 0.0
@@ -2456,6 +2487,7 @@ func _laser_target_in_range(target, laser: Dictionary) -> bool:
 
 func _choose_laser_target(
     laser: Dictionary,
+    laser_index: int,
     excluded_target: SpaceAsteroid = null
 ):
     var best = null
@@ -2469,8 +2501,8 @@ func _choose_laser_target(
         if asteroid == excluded_target or not asteroid.has_cells():
             continue
 
-        # Cheap center-distance rejection keeps the 420-body ring from doing
-        # precise hitbox-distance work for obviously distant candidates.
+        # Cheap center-distance rejection keeps the full ring from doing exact
+        # hitbox checks for obviously distant candidates.
         var broad_distance := ship_body.global_position.distance_to(
             asteroid.global_position
         )
@@ -2488,11 +2520,37 @@ func _choose_laser_target(
             continue
         if _laser_target_is_obstructed(laser, asteroid):
             continue
+        if not _laser_target_has_available_cell(
+            laser,
+            laser_index,
+            asteroid
+        ):
+            continue
 
         best_distance = distance
         best = asteroid
 
     return best
+
+
+func _laser_target_has_available_cell(
+    laser: Dictionary,
+    laser_index: int,
+    asteroid: SpaceAsteroid
+) -> bool:
+    var pivot = laser.get("pivot", null)
+    if pivot == null or not is_instance_valid(pivot):
+        return false
+
+    var exclusions := _reserved_mining_cells(
+        asteroid,
+        laser_index
+    )
+    var selection := asteroid.closest_surface_cell_excluding(
+        _laser_muzzle_world(pivot as Node3D),
+        exclusions
+    )
+    return not selection.is_empty()
 
 
 func _laser_target_is_obstructed(
@@ -2509,6 +2567,32 @@ func _laser_target_is_obstructed(
         asteroid.global_position,
         laser.get("anchor_cell", Vector3i.ZERO) as Vector3i
     )
+
+
+func _set_laser_hard_error(
+    laser_index: int,
+    laser: Dictionary,
+    reason: String
+) -> void:
+    var previous := str(laser.get("diagnostic_error", ""))
+    if previous != reason:
+        AppLogger.event(
+            "MINING LASER ERROR index=%d reason=%s target=%s reserved=%s"
+            % [
+                laser_index,
+                reason,
+                str(laser.get("target", null)),
+                str(laser.get("reserved_cell", null)),
+            ]
+        )
+        laser["diagnostic_error"] = reason
+
+    _set_laser_status(laser_index, false, "Error")
+
+
+func _clear_laser_hard_error(laser: Dictionary) -> void:
+    if laser.has("diagnostic_error"):
+        laser.erase("diagnostic_error")
 
 
 func _laser_cell_hitbox_distance(
