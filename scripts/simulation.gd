@@ -65,7 +65,8 @@ const TRACTOR_MAX_SPEED := 10.0
 var ship_id := ""
 var ship_body: CharacterBody3D
 var ship_visual_root: Node3D
-var ship_collision: CollisionShape3D
+var ship_collision_shapes: Array[CollisionShape3D] = []
+var ship_collision_bindings: Array[Dictionary] = []
 var camera: Camera3D
 
 var asteroid_root: Node3D
@@ -127,7 +128,7 @@ var auto_orbit_off_indicator: PanelContainer
 var auto_orbit_on_indicator: PanelContainer
 
 var debug_hitboxes_visible := false
-var ship_debug_hitbox: MeshInstance3D
+var ship_debug_hitbox: Node3D
 var debug_laser_range_visible := false
 var laser_range_debug_root: Node3D
 
@@ -289,9 +290,6 @@ func _build_simulation_roots() -> void:
     ship_visual_root.name = "ShipVisual"
     ship_body.add_child(ship_visual_root)
 
-    ship_collision = CollisionShape3D.new()
-    ship_body.add_child(ship_collision)
-
 
 func _load_ship() -> void:
     var data := ShipStore.load_model(ship_id)
@@ -365,11 +363,6 @@ func _load_ship() -> void:
     collision_size.y = maxf(collision_size.y, 0.9)
     collision_size.z = maxf(collision_size.z, 0.9)
 
-    var collision_shape := BoxShape3D.new()
-    collision_shape.size = collision_size
-    ship_collision.shape = collision_shape
-    _rebuild_ship_debug_hitbox()
-
     model_radius = maxf(
         1.5,
         maxf(collision_size.x, collision_size.z) * 0.5
@@ -410,6 +403,9 @@ func _load_ship() -> void:
         var mesh_instance := MeshInstance3D.new()
         mesh_instance.mesh = fallback
         ship_visual_root.add_child(mesh_instance)
+
+    _build_ship_collision_from_visuals()
+    _rebuild_ship_debug_hitbox()
 
 
 func _instantiate_ship_part(record: Dictionary) -> void:
@@ -461,9 +457,7 @@ func _colors_from_entry(entry: Dictionary, part_index: int) -> Array[Color]:
     if color_data is Array:
         for value in color_data:
             colors.append(Color.from_string(str(value), Color.WHITE))
-    if colors.is_empty():
-        colors = PartFactory.default_colors(part_index)
-    return colors
+    return PartFactory.normalize_colors(part_index, colors)
 
 
 func _basis_from_json(value) -> Basis:
@@ -506,6 +500,70 @@ func _cell_world_center(cell: Vector3i) -> Vector3:
         float(cell.z) + 0.5,
         float(cell.y) + 0.5
     )
+
+
+func _build_ship_collision_from_visuals() -> void:
+    for collision_shape in ship_collision_shapes:
+        if collision_shape != null and is_instance_valid(collision_shape):
+            collision_shape.queue_free()
+
+    ship_collision_shapes.clear()
+    ship_collision_bindings.clear()
+    _append_ship_collision_meshes(ship_visual_root)
+    _sync_ship_collision_transforms()
+
+
+func _append_ship_collision_meshes(node: Node) -> void:
+    if node is MeshInstance3D:
+        var source := node as MeshInstance3D
+        if source.mesh != null:
+            # CharacterBody3D requires convex moving collision. Each rendered
+            # piece contributes its own convex hull, so slopes, pyramids,
+            # hemispheres, roofs, thrusters and the laser follow their real
+            # exterior geometry instead of one ship-sized bounding box.
+            var shape := source.mesh.create_convex_shape(true, false)
+            if shape != null:
+                var collision := CollisionShape3D.new()
+                collision.name = "ShipShape_%d" % ship_collision_shapes.size()
+                collision.shape = shape
+                ship_body.add_child(collision)
+                ship_collision_shapes.append(collision)
+                ship_collision_bindings.append({
+                    "shape": collision,
+                    "source": source,
+                    "debug": null,
+                })
+
+    for child in node.get_children():
+        _append_ship_collision_meshes(child)
+
+
+func _sync_ship_collision_transforms() -> void:
+    if ship_body == null or not is_instance_valid(ship_body):
+        return
+
+    var body_inverse := ship_body.global_transform.affine_inverse()
+
+    for binding in ship_collision_bindings:
+        var collision = binding.get("shape", null)
+        var source = binding.get("source", null)
+        if (
+            collision == null
+            or not is_instance_valid(collision)
+            or source == null
+            or not is_instance_valid(source)
+        ):
+            continue
+
+        var relative := (
+            body_inverse
+            * (source as MeshInstance3D).global_transform
+        )
+        (collision as CollisionShape3D).transform = relative
+
+        var debug_mesh = binding.get("debug", null)
+        if debug_mesh != null and is_instance_valid(debug_mesh):
+            (debug_mesh as MeshInstance3D).transform = relative
 
 
 func _build_camera() -> void:
@@ -1165,28 +1223,45 @@ func _rebuild_ship_debug_hitbox() -> void:
         ship_debug_hitbox.queue_free()
         ship_debug_hitbox = null
 
+    for binding in ship_collision_bindings:
+        binding["debug"] = null
+
     if not debug_hitboxes_visible:
         return
-    if ship_collision == null or ship_collision.shape == null:
-        return
-    if not (ship_collision.shape is BoxShape3D):
+    if ship_collision_bindings.is_empty():
         return
 
-    var collision_box := ship_collision.shape as BoxShape3D
     var material := StandardMaterial3D.new()
     material.albedo_color = Color(0.15, 0.75, 1.0, 1.0)
     material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
     material.no_depth_test = true
+    material.cull_mode = BaseMaterial3D.CULL_DISABLED
+    material.polygon_mode = BaseMaterial3D.POLYGON_MODE_LINE
 
-    ship_debug_hitbox = MeshInstance3D.new()
+    ship_debug_hitbox = Node3D.new()
     ship_debug_hitbox.name = "DebugShipHitbox"
-    ship_debug_hitbox.mesh = _make_debug_box_outline(
-        collision_box.size,
-        material
-    )
-    ship_debug_hitbox.position = ship_collision.position
-    ship_debug_hitbox.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     ship_body.add_child(ship_debug_hitbox)
+
+    for binding in ship_collision_bindings:
+        var source = binding.get("source", null)
+        var collision = binding.get("shape", null)
+        if (
+            source == null
+            or not is_instance_valid(source)
+            or collision == null
+            or not is_instance_valid(collision)
+        ):
+            continue
+
+        var debug_mesh := MeshInstance3D.new()
+        debug_mesh.mesh = (source as MeshInstance3D).mesh
+        debug_mesh.material_override = material
+        debug_mesh.transform = (collision as CollisionShape3D).transform
+        debug_mesh.cast_shadow = (
+            GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+        )
+        ship_debug_hitbox.add_child(debug_mesh)
+        binding["debug"] = debug_mesh
 
 
 func _make_debug_box_outline(
@@ -1241,10 +1316,12 @@ func _physics_process(delta: float) -> void:
         _set_thruster_emission(false)
         return
 
+    _sync_ship_collision_transforms()
     _update_ship_motion(delta)
     _update_asteroids(delta)
     _update_tractor_chunks(delta)
     _update_mining_lasers(delta)
+    _sync_ship_collision_transforms()
     _update_camera(delta)
 
 
