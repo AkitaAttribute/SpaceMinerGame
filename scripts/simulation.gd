@@ -1236,7 +1236,6 @@ func _rebuild_ship_debug_hitbox() -> void:
     material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
     material.no_depth_test = true
     material.cull_mode = BaseMaterial3D.CULL_DISABLED
-    material.polygon_mode = BaseMaterial3D.POLYGON_MODE_LINE
 
     ship_debug_hitbox = Node3D.new()
     ship_debug_hitbox.name = "DebugShipHitbox"
@@ -1254,14 +1253,89 @@ func _rebuild_ship_debug_hitbox() -> void:
             continue
 
         var debug_mesh := MeshInstance3D.new()
-        debug_mesh.mesh = (source as MeshInstance3D).mesh
-        debug_mesh.material_override = material
+        debug_mesh.mesh = _make_mesh_wireframe(
+            (source as MeshInstance3D).mesh,
+            material
+        )
         debug_mesh.transform = (collision as CollisionShape3D).transform
         debug_mesh.cast_shadow = (
             GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
         )
         ship_debug_hitbox.add_child(debug_mesh)
         binding["debug"] = debug_mesh
+
+
+func _make_mesh_wireframe(
+    source_mesh: Mesh,
+    material: Material
+) -> ImmediateMesh:
+    var result := ImmediateMesh.new()
+
+    for surface_index in range(source_mesh.get_surface_count()):
+        var arrays := source_mesh.surface_get_arrays(surface_index)
+        if arrays.is_empty():
+            continue
+
+        var vertices = arrays[Mesh.ARRAY_VERTEX]
+        if not (vertices is PackedVector3Array):
+            continue
+
+        var vertex_array := vertices as PackedVector3Array
+        var indices = arrays[Mesh.ARRAY_INDEX]
+        var edge_keys: Dictionary = {}
+        var edges: Array[Vector2i] = []
+
+        if indices is PackedInt32Array and (indices as PackedInt32Array).size() >= 3:
+            var index_array := indices as PackedInt32Array
+            for triangle_start in range(0, index_array.size() - 2, 3):
+                var a := int(index_array[triangle_start])
+                var b := int(index_array[triangle_start + 1])
+                var d := int(index_array[triangle_start + 2])
+                _append_unique_mesh_edge(edge_keys, edges, a, b)
+                _append_unique_mesh_edge(edge_keys, edges, b, d)
+                _append_unique_mesh_edge(edge_keys, edges, d, a)
+        else:
+            for triangle_start in range(0, vertex_array.size() - 2, 3):
+                var a := triangle_start
+                var b := triangle_start + 1
+                var d := triangle_start + 2
+                _append_unique_mesh_edge(edge_keys, edges, a, b)
+                _append_unique_mesh_edge(edge_keys, edges, b, d)
+                _append_unique_mesh_edge(edge_keys, edges, d, a)
+
+        if edges.is_empty():
+            continue
+
+        result.surface_begin(Mesh.PRIMITIVE_LINES, material)
+        for edge in edges:
+            if (
+                edge.x < 0
+                or edge.y < 0
+                or edge.x >= vertex_array.size()
+                or edge.y >= vertex_array.size()
+            ):
+                continue
+            result.surface_add_vertex(vertex_array[edge.x])
+            result.surface_add_vertex(vertex_array[edge.y])
+        result.surface_end()
+
+    return result
+
+
+func _append_unique_mesh_edge(
+    edge_keys: Dictionary,
+    edges: Array[Vector2i],
+    first: int,
+    second: int
+) -> void:
+    var low := mini(first, second)
+    var high := maxi(first, second)
+    var key := "%d:%d" % [low, high]
+    if edge_keys.has(key):
+        return
+
+    edge_keys[key] = true
+    edges.append(Vector2i(low, high))
 
 
 func _make_debug_box_outline(
