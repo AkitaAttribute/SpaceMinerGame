@@ -210,7 +210,7 @@ func _build_world() -> void:
     environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
     environment.ambient_light_color = Color(0.72, 0.79, 0.92)
     environment.ambient_light_energy = 0.24
-    environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+    environment.tonemap_mode = Environment.TONE_MAPPER_LINEAR
     world_environment.environment = environment
     add_child(world_environment)
 
