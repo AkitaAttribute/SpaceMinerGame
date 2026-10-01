@@ -2336,28 +2336,31 @@ func _refresh_color_controls() -> void:
     for index in range(slot_names.size()):
         var color := _color_for_slot(index)
         var button := Button.new()
-        button.text = "%s    #%s" % [
-            slot_names[index],
-            color.to_html(false).to_upper(),
-        ]
+        button.text = slot_names[index]
         button.alignment = HORIZONTAL_ALIGNMENT_LEFT
         button.custom_minimum_size = Vector2(0.0, 44.0)
         button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
         button.pressed.connect(_open_color_picker.bind(index))
 
-        var normal := StyleBoxFlat.new()
-        normal.bg_color = Color(0.08, 0.11, 0.16, 0.16)
-        normal.border_color = color
-        normal.set_border_width_all(2)
-        normal.set_corner_radius_all(8)
-        var hover := normal.duplicate() as StyleBoxFlat
-        hover.bg_color = Color(color.r, color.g, color.b, 0.13)
-        var pressed := normal.duplicate() as StyleBoxFlat
-        pressed.bg_color = Color(color.r, color.g, color.b, 0.22)
+        # The drawer shows only the region name plus a compact swatch. The
+        # swatch deliberately reuses the exact popup swatch styling, just at a
+        # smaller size appropriate for the Parts drawer.
+        var swatch := Button.new()
+        swatch.text = ""
+        swatch.tooltip_text = (
+            "#"
+            + color.to_html(false).to_upper()
+        )
+        swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        swatch.focus_mode = Control.FOCUS_NONE
+        swatch.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+        swatch.offset_left = -38.0
+        swatch.offset_top = 8.0
+        swatch.offset_right = -10.0
+        swatch.offset_bottom = 36.0
+        _set_color_button_style(swatch, color)
+        button.add_child(swatch)
 
-        button.add_theme_stylebox_override("normal", normal)
-        button.add_theme_stylebox_override("hover", hover)
-        button.add_theme_stylebox_override("pressed", pressed)
         color_slots_container.add_child(button)
 
 
