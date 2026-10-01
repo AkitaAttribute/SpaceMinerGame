@@ -29,7 +29,7 @@ var selected_part := 0
 var part_basis := Basis.IDENTITY
 var part_colors: Dictionary = {}
 var placed_parts: Dictionary = {}
-var paint_color := Color("#5f83c6")
+var paint_color := Color("#1e88e5")
 var paint_slot := 0
 
 var ui_layer: CanvasLayer
@@ -138,13 +138,13 @@ func _launch_simulation_smoke_if_requested() -> bool:
                 "part_id": "cube",
                 "anchor": [0, 0, 0],
                 "basis": identity_basis,
-                "colors": ["5f83c6ff"],
+                "colors": ["1e88e5ff"],
             },
             {
                 "part_id": "mining_laser",
                 "anchor": [1, 0, 0],
                 "basis": identity_basis,
-                "colors": ["5f83c6ff"],
+                "colors": ["1e88e5ff"],
             },
             {
                 "part_id": "thruster_t1",
@@ -448,7 +448,7 @@ func _build_color_picker_popup() -> void:
     content.add_child(custom_row)
 
     color_hex_input = LineEdit.new()
-    color_hex_input.placeholder_text = "#5F83C6"
+    color_hex_input.placeholder_text = "#1E88E5"
     color_hex_input.max_length = 9
     color_hex_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     color_hex_input.custom_minimum_size = Vector2(0.0, 46.0)
@@ -2401,7 +2401,7 @@ func _color_for_slot(slot_index: int) -> Color:
     if slot_index >= 0 and slot_index < colors.size():
         return colors[slot_index] as Color
 
-    return Color("#5f83c6")
+    return Color("#1e88e5")
 
 
 func _set_hex_color_text(color: Color) -> void:
