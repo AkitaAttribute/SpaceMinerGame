@@ -349,17 +349,22 @@ static func _material(color: Color, ghost: bool, double_sided := false) -> Stand
     if ghost:
         final_color.a = 0.46
         material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-    # UI swatches are display-space sRGB, while the ship is rendered through
-    # the scene's Filmic tonemapper. Pre-compensate only ship material RGB so
-    # the Filmic output lands on the selected swatch color without changing the
-    # planet, asteroids, background, or any other scene rendering.
+    # UI swatches are display-space sRGB, while StandardMaterial3D converts
+    # albedo colors to linear before the scene's Filmic tonemapper. To make a
+    # rendered ship part land on the same visible color as its UI swatch:
+    #   sRGB swatch -> desired linear output -> inverse Filmic -> sRGB material.
+    # The final linear_to_srgb() is important because albedo_color will perform
+    # its normal sRGB-to-linear conversion in the renderer. Omitting it was the
+    # reason the previous compensation over-darkened and over-saturated colors.
     var target_linear := final_color.srgb_to_linear()
-    var compensated := Color(
+    var compensated_linear := Color(
         _inverse_filmic_channel(target_linear.r),
         _inverse_filmic_channel(target_linear.g),
         _inverse_filmic_channel(target_linear.b),
         final_color.a
     )
+    var compensated := compensated_linear.linear_to_srgb()
+    compensated.a = final_color.a
     material.albedo_color = compensated
 
     # Ship-builder parts are editor geometry, not scene-lit objects. Keep every
