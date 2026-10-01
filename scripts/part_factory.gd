@@ -312,17 +312,55 @@ static func _add_mining_laser(root: Node3D, colors: Array[Color], ghost: bool) -
     )
 
 
+static func _filmic_curve_channel(value: float) -> float:
+    # Matches Godot's GLES3 Filmic tonemapper at the default white point.
+    const A := 0.88
+    const B := 0.60
+    const C := 0.10
+    const D := 0.20
+    const E := 0.01
+    const F := 0.30
+    var numerator := value * (A * value + C * B) + D * E
+    var denominator := value * (A * value + B) + D * F
+    return (numerator / denominator) - E / F
+
+
+static func _inverse_filmic_channel(target: float) -> float:
+    # Filmic is monotonic, so a tiny binary search is safer and clearer than
+    # hard-coding the quadratic inverse. Normalize at white=1.0 exactly as the
+    # engine does for the current Environment defaults.
+    var normalized_target := clampf(target, 0.0, 1.0)
+    var white_value := _filmic_curve_channel(1.0)
+    var low := 0.0
+    var high := 8.0
+    for _step in range(22):
+        var mid := (low + high) * 0.5
+        var mapped := _filmic_curve_channel(mid) / white_value
+        if mapped < normalized_target:
+            low = mid
+        else:
+            high = mid
+    return (low + high) * 0.5
+
+
 static func _material(color: Color, ghost: bool, double_sided := false) -> StandardMaterial3D:
     var material := StandardMaterial3D.new()
     var final_color := color
     if ghost:
         final_color.a = 0.46
         material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-    # Color.from_string()/HTML hex colors are already in the form expected by
-    # StandardMaterial3D.albedo_color. Converting them with srgb_to_linear()
-    # here applies an extra gamma conversion and crushes darker selections
-    # (for example #25282F) nearly to black. Keep the exact selected color.
-    material.albedo_color = final_color
+    # UI swatches are display-space sRGB, while the ship is rendered through
+    # the scene's Filmic tonemapper. Pre-compensate only ship material RGB so
+    # the Filmic output lands on the selected swatch color without changing the
+    # planet, asteroids, background, or any other scene rendering.
+    var target_linear := final_color.srgb_to_linear()
+    var compensated := Color(
+        _inverse_filmic_channel(target_linear.r),
+        _inverse_filmic_channel(target_linear.g),
+        _inverse_filmic_channel(target_linear.b),
+        final_color.a
+    )
+    material.albedo_color = compensated
 
     # Ship-builder parts are editor geometry, not scene-lit objects. Keep every
     # color region completely flat/unshaded so adjacent pieces read as one model
