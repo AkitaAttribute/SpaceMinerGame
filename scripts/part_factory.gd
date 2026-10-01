@@ -318,13 +318,11 @@ static func _material(color: Color, ghost: bool, double_sided := false) -> Stand
     if ghost:
         final_color.a = 0.46
         material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-    # UI swatches and saved hex values are authored as sRGB colors, while
-    # StandardMaterial3D's albedo is consumed by the 3D renderer in linear
-    # space. Feeding the sRGB components directly was the main reason ship
-    # colors looked brighter, flatter, and washed out compared with the picker.
-    # Convert only at the 3D material boundary so the saved/UI color remains the
-    # exact hexadecimal value the player selected.
-    material.albedo_color = final_color.srgb_to_linear()
+    # Color.from_string()/HTML hex colors are already in the form expected by
+    # StandardMaterial3D.albedo_color. Converting them with srgb_to_linear()
+    # here applies an extra gamma conversion and crushes darker selections
+    # (for example #25282F) nearly to black. Keep the exact selected color.
+    material.albedo_color = final_color
 
     # Ship-builder parts are editor geometry, not scene-lit objects. Keep every
     # color region completely flat/unshaded so adjacent pieces read as one model
