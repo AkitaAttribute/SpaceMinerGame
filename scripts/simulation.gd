@@ -396,7 +396,7 @@ func _load_ship() -> void:
         var fallback := BoxMesh.new()
         fallback.size = Vector3.ONE
         var material := StandardMaterial3D.new()
-        material.albedo_color = Color("#5f83c6")
+        material.albedo_color = Color("#1e88e5")
         material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
         fallback.material = material
 
