@@ -1,7 +1,7 @@
 class_name PartFactory
 extends RefCounted
 
-const DEFAULT_PART_COLOR := Color("#5f83c6")
+const DEFAULT_PART_COLOR := Color("#1e88e5")
 const THRUSTER_CONE_COLOR := Color("#25282f")
 
 const PARTS := [
