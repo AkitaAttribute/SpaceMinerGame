@@ -173,7 +173,7 @@ func _build_environment() -> void:
     environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
     environment.ambient_light_color = Color("#27344c")
     environment.ambient_light_energy = 0.16
-    environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+    environment.tonemap_mode = Environment.TONE_MAPPER_LINEAR
     world.environment = environment
     add_child(world)
 
