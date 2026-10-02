@@ -1263,6 +1263,9 @@ func _refresh_bumper_visibility() -> void:
     next_bumper.visible = parts_open
 
 func _input(event: InputEvent) -> void:
+    if SkyCatalog.is_generating():
+        return
+
     if waiting_for_binding and event is InputEventKey:
         var key_event := event as InputEventKey
         if key_event.pressed and not key_event.echo:
@@ -1285,6 +1288,9 @@ func _input(event: InputEvent) -> void:
         return
 
 func _unhandled_input(event: InputEvent) -> void:
+    if SkyCatalog.is_generating():
+        return
+
     if event.is_action_pressed(&"menu_back"):
         _handle_menu_back()
         get_viewport().set_input_as_handled()
@@ -1437,6 +1443,7 @@ func _show_root_menu() -> void:
     specs.append_array([
         ["Display", "display"],
         ["Controls", "controls"],
+        ["Debug", "debug"],
     ])
 
     if view_mode == "builder":
@@ -1463,6 +1470,8 @@ func _root_menu_action(action: String) -> void:
             _show_display_menu()
         "controls":
             _show_controls_menu()
+        "debug":
+            _show_debug_menu()
         "exit":
             if view_mode == "builder":
                 _save_current_ship_model()
@@ -1680,6 +1689,99 @@ func _on_native_ship_export_selected(
     if not status or selected_paths.is_empty():
         return
     ShipStore.export_model(model_id, selected_paths[0])
+
+
+func _show_debug_menu() -> void:
+    menu_state = "debug"
+    _clear_menu_content()
+    _add_submenu_header("Debug")
+
+    var checkpoint := SkyCatalog.get_checkpoint_summary()
+    var generation := Button.new()
+    generation.text = (
+        "Resume Skybox Generation"
+        if not checkpoint.is_empty()
+        else "Generate Skybox"
+    )
+    generation.custom_minimum_size = Vector2(0.0, 56.0)
+    generation.pressed.connect(
+        _open_sky_generation_dialog.bind(not checkpoint.is_empty())
+    )
+    menu_content.add_child(generation)
+
+    if not checkpoint.is_empty():
+        var checkpoint_label := Label.new()
+        checkpoint_label.text = (
+            "Interrupted generation: %s (%d%%)"
+            % [
+                str(checkpoint.get("name", "Sky")),
+                int(round(float(checkpoint.get("progress", 0.0)) * 100.0)),
+            ]
+        )
+        checkpoint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        checkpoint_label.modulate.a = 0.76
+        menu_content.add_child(checkpoint_label)
+
+        var discard := Button.new()
+        discard.text = "Discard Interrupted Generation"
+        discard.custom_minimum_size = Vector2(0.0, 48.0)
+        discard.pressed.connect(_discard_sky_generation_checkpoint)
+        menu_content.add_child(discard)
+
+    var sky_label := Label.new()
+    sky_label.text = "Active sky"
+    sky_label.modulate.a = 0.82
+    menu_content.add_child(sky_label)
+
+    var sky_selector := OptionButton.new()
+    sky_selector.custom_minimum_size = Vector2(0.0, 48.0)
+    sky_selector.add_item("Built-in Sky")
+    sky_selector.set_item_metadata(0, "")
+
+    var active_id := SkyCatalog.get_active_sky_id()
+    var selected_index := 0
+    var skies := SkyCatalog.list_skies()
+
+    for sky in skies:
+        var item_index := sky_selector.item_count
+        var sky_id := str(sky.get("id", ""))
+        sky_selector.add_item(str(sky.get("name", "Generated Sky")))
+        sky_selector.set_item_metadata(item_index, sky_id)
+        if sky_id == active_id:
+            selected_index = item_index
+
+    sky_selector.select(selected_index)
+    sky_selector.item_selected.connect(func(index: int):
+        SkyCatalog.set_active_sky(
+            str(sky_selector.get_item_metadata(index))
+        )
+    )
+    menu_content.add_child(sky_selector)
+
+    var note := Label.new()
+    note.text = (
+        "%d generated sky file(s). Completed skies and resumable checkpoints "
+        + "are stored as JSON under user://skyboxes."
+    ) % skies.size()
+    note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    note.modulate.a = 0.70
+    menu_content.add_child(note)
+
+
+func _open_sky_generation_dialog(resume_existing: bool) -> void:
+    var dialog := SkyGenerationDialog.new()
+    add_child(dialog)
+
+    if resume_existing:
+        dialog.start_resume()
+    else:
+        dialog.start_new()
+
+
+func _discard_sky_generation_checkpoint() -> void:
+    SkyCatalog.discard_checkpoint()
+    _show_debug_menu()
+
 
 func _show_display_menu() -> void:
     menu_state = "display"
