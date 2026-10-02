@@ -1,0 +1,140 @@
+name: Windows ship-builder prototype build
+
+on:
+  push:
+    branches:
+      - prototype/ship-builder-first-pass
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17 for Android
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Godot 4.7.1 and export templates
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -L -o /tmp/godot.zip https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          unzip -q /tmp/godot.zip -d /tmp/godot
+          chmod +x /tmp/godot/Godot_v4.7.1-stable_linux.x86_64
+          sudo mv /tmp/godot/Godot_v4.7.1-stable_linux.x86_64 /usr/local/bin/godot
+
+          curl -L -o /tmp/templates.tpz https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_export_templates.tpz
+          mkdir -p /tmp/export-templates
+          unzip -q /tmp/templates.tpz -d /tmp/export-templates
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.7.1.stable"
+          cp -R /tmp/export-templates/templates/* "$HOME/.local/share/godot/export_templates/4.7.1.stable/"
+          godot --version
+
+      - name: Import and compile project
+        shell: bash
+        run: |
+          set -o pipefail
+          godot --headless --path . --import 2>&1 | tee /tmp/godot-import.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Shader compilation failed|Failed to compile shader|SPIR-V compilation failed" /tmp/godot-import.log; then
+            echo "Godot reported script or shader compilation errors during import."
+            exit 1
+          fi
+
+      - name: Runtime smoke test
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          timeout 8s godot --headless --path . 2>&1 | tee /tmp/godot-runtime.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ $status -ne 0 && $status -ne 124 ]]; then
+            exit $status
+          fi
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Shader compilation failed|Failed to compile shader" /tmp/godot-runtime.log; then
+            echo "Godot reported script or shader errors while starting the game."
+            exit 1
+          fi
+
+      - name: Simulation smoke test
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          timeout 10s godot --headless --path . -- --simulation-smoke 2>&1 | tee /tmp/godot-simulation.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ $status -ne 0 && $status -ne 124 ]]; then
+            exit $status
+          fi
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Invalid call|Invalid access|Condition .* is true|ERROR:" /tmp/godot-simulation.log; then
+            echo "Godot reported errors while exercising the mining simulation."
+            exit 1
+          fi
+
+      - name: Export Windows executable
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build
+          godot --headless --path . --export-release "Windows Desktop" build/SpaceMinerGame.exe 2>&1 | tee /tmp/godot-export.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Shader compilation failed|Failed to compile shader" /tmp/godot-export.log; then
+            echo "Godot reported script or shader errors during export."
+            exit 1
+          fi
+          test -s build/SpaceMinerGame.exe
+          ls -lh build/SpaceMinerGame.exe
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpaceMinerGame-Windows-${{ github.sha }}
+          path: build/SpaceMinerGame.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Prepare Android debug signing
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -d "$ANDROID_HOME"
+          test -x "$JAVA_HOME/bin/keytool"
+          mkdir -p "$HOME/.android"
+          if [[ ! -f "$HOME/.android/debug.keystore" ]]; then
+            "$JAVA_HOME/bin/keytool" -genkeypair -v               -keystore "$HOME/.android/debug.keystore"               -storepass android               -alias androiddebugkey               -keypass android               -keyalg RSA               -keysize 2048               -validity 10000               -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Export Android debug APK
+        shell: bash
+        env:
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /home/runner/.android/debug.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
+        run: |
+          set -o pipefail
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" build/SpaceMinerGame-Android.apk 2>&1 | tee /tmp/godot-android-export.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Shader compilation failed|Failed to compile shader" /tmp/godot-android-export.log; then
+            echo "Godot reported errors during Android export."
+            exit 1
+          fi
+          test -s build/SpaceMinerGame-Android.apk
+          ls -lh build/SpaceMinerGame-Android.apk
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpaceMinerGame-Android-${{ github.sha }}
+          path: build/SpaceMinerGame-Android.apk
+          if-no-files-found: error
+          retention-days: 14
