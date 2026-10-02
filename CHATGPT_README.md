@@ -1160,55 +1160,76 @@ When adding features, prefer this style over brute-force node counts or camera-d
 The project is currently a working Godot 4.7.1 modular ship builder with persistent models, a test-flight scene, actual part-shaped ship collision, independent multi-laser asteroid mining, auto-orbit, a full 420-asteroid moving planetary ring, and a simplified slot-based color UI; the most important regression risks are asteroid rendering/culling, multi-laser reservation edge cases, and preserving exact ship collision without reintroducing a giant bounding box.
 
 
-## 21. Generated distant-space skies
+## 23. Generated panorama skies
 
-The simulation no longer depends on an image panorama skybox. It renders a static
-distant-space catalog with instanced star and nebula quads.
+Generated skies are now authored procedurally but rendered at runtime as one
+static equirectangular panorama image. The old live `DistantSpace` star/nebula
+MultiMesh shell has been removed.
 
 Relevant files:
 
-- `scripts/distant_space.gd`
 - `scripts/sky_catalog.gd`
 - `scripts/sky_generation_dialog.gd`
-- `assets/space/distant_space_catalog.csv` (built-in fallback)
+- `scripts/simulation.gd`
 
-Settings -> Debug now contains:
+Settings -> Debug contains:
 
 - `Generate Skybox`
 - `Resume Skybox Generation` when an interrupted checkpoint exists
 - `Discard Interrupted Generation`
-- an `Active sky` selector containing the built-in sky and all completed
-  generated skies
+- an `Active sky` selector containing Black Background plus every completed
+  baked panorama
 
-Generated skies are stored under `user://skyboxes/` as separate JSON files.
-`index.json` tracks completed skies and the active selection.
+Generation has two halves:
 
-Generation creates:
+1. Source generation:
+   - 10,000 isotropically distributed stars
+   - 6 nebula clouds
+   - 300 particles per cloud / 1,800 nebula particles total
+2. Static panorama bake:
+   - 8192 x 4096 RGB PNG
+   - star/nebula source positions are projected into equirectangular space
+   - each source is baked as a soft additive splat
+   - star splats have a minimum panorama footprint so no generated point is a
+     single sub-pixel impulse in the source texture
 
-- 10,000 isotropically distributed stars
-- 6 nebula clouds
-- 300 particles per cloud / 1,800 nebula particles total
+Each completed sky is stored under:
 
-Generation is incremental and runs through the global `SkyCatalog` autoload.
-While generation is running:
+`user://skyboxes/sky_<id>/`
+
+with:
+
+- `source.json` — reusable procedural source data
+- `panorama.png` — final static runtime sky
+- `panorama_work.png` — temporary resumable bake image while generation is
+  incomplete
+
+`user://skyboxes/index.json` tracks completed skies and the active selection.
+
+Generation remains incremental. While it runs:
 
 - the SceneTree is paused,
 - main/builder input is explicitly blocked,
-- simulation input and physics are explicitly blocked because those scene roots
-  normally run with `PROCESS_MODE_ALWAYS`,
-- a modal circular progress indicator shows completion percentage,
-- `Pause and Save` writes a resumable checkpoint.
+- simulation input and physics are explicitly blocked because those roots use
+  `PROCESS_MODE_ALWAYS`,
+- the modal progress wheel covers both source generation and panorama baking,
+- `Pause and Save` checkpoints the current phase.
 
-Crash/closure recovery uses alternating checkpoint JSON files:
+Crash/closure recovery still uses alternating JSON checkpoint files:
 
 - `generation_checkpoint_a.json`
 - `generation_checkpoint_b.json`
 
-The generator writes a checkpoint every 384 generated records. The alternating
-files ensure that a crash during one checkpoint write leaves the previous
-checkpoint available. Resuming restores the exact PRNG state and continues from
-the latest valid checkpoint.
+During the bake phase the partial panorama PNG is periodically written before
+the corresponding JSON checkpoint. If the partial PNG is lost but the generated
+source JSON survives, resume restarts only the panorama bake rather than
+regenerating the star/nebula source.
 
-A completed generated sky is automatically made active. The simulation listens
-for `SkyCatalog.active_sky_changed` and reloads the distant-space renderer when
-the selection changes.
+Runtime behavior:
+
+- `simulation.gd` loads only the active `panorama.png`
+- it creates an `ImageTexture` with mipmaps
+- the texture is assigned to `PanoramaSkyMaterial`
+- there are no live distant-star or nebula objects to move, rotate, or flicker
+- selecting Black Background disables the panorama and uses a black environment
+- changing the active generated sky reloads the static panorama immediately
