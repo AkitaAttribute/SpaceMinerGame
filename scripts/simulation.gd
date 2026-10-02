@@ -140,6 +140,7 @@ var desktop_cursor_hold := false
 
 func _ready() -> void:
     process_mode = Node.PROCESS_MODE_ALWAYS
+    SkyCatalog.active_sky_changed.connect(_on_active_sky_changed)
 
     var request := ShipStore.take_view_request()
     ship_id = str(request.get("ship_id", ""))
@@ -189,12 +190,23 @@ func _build_distant_space() -> void:
     distant_space.name = "DistantSpace"
     add_child(distant_space)
 
-    if not distant_space.build_from_catalog():
+    if not distant_space.build_active_or_default():
         distant_space.queue_free()
         distant_space = null
         return
 
     _update_distant_space()
+
+
+func _reload_distant_space() -> void:
+    if distant_space != null and is_instance_valid(distant_space):
+        distant_space.queue_free()
+        distant_space = null
+    _build_distant_space()
+
+
+func _on_active_sky_changed(_path: String) -> void:
+    _reload_distant_space()
 
 
 func _update_distant_space() -> void:
@@ -930,6 +942,9 @@ func _is_mobile_platform() -> bool:
 
 
 func _input(event: InputEvent) -> void:
+    if SkyCatalog.is_generating():
+        return
+
     if _is_mobile_platform():
         return
 
@@ -949,6 +964,9 @@ func _input(event: InputEvent) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+    if SkyCatalog.is_generating():
+        return
+
     if event.is_action_pressed(&"menu_back"):
         if menu_open:
             _close_menu()
@@ -1099,11 +1117,77 @@ func _show_flight_debug_menu() -> void:
     laser_range.toggled.connect(_set_debug_laser_range_visible)
     menu_content.add_child(laser_range)
 
+    var checkpoint := SkyCatalog.get_checkpoint_summary()
+    var generation := Button.new()
+    generation.text = (
+        "Resume Skybox Generation"
+        if not checkpoint.is_empty()
+        else "Generate Skybox"
+    )
+    generation.custom_minimum_size = Vector2(0.0, 56.0)
+    generation.pressed.connect(
+        _open_sky_generation_dialog.bind(not checkpoint.is_empty())
+    )
+    menu_content.add_child(generation)
+
+    if not checkpoint.is_empty():
+        var checkpoint_label := Label.new()
+        checkpoint_label.text = (
+            "Interrupted generation: %s (%d%%)"
+            % [
+                str(checkpoint.get("name", "Sky")),
+                int(round(float(checkpoint.get("progress", 0.0)) * 100.0)),
+            ]
+        )
+        checkpoint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        checkpoint_label.modulate.a = 0.76
+        menu_content.add_child(checkpoint_label)
+
+    var sky_label := Label.new()
+    sky_label.text = "Active sky"
+    sky_label.modulate.a = 0.82
+    menu_content.add_child(sky_label)
+
+    var sky_selector := OptionButton.new()
+    sky_selector.custom_minimum_size = Vector2(0.0, 48.0)
+    sky_selector.add_item("Built-in Sky")
+    sky_selector.set_item_metadata(0, "")
+
+    var active_id := SkyCatalog.get_active_sky_id()
+    var selected_index := 0
+    for sky in SkyCatalog.list_skies():
+        var item_index := sky_selector.item_count
+        var sky_id := str(sky.get("id", ""))
+        sky_selector.add_item(str(sky.get("name", "Generated Sky")))
+        sky_selector.set_item_metadata(item_index, sky_id)
+        if sky_id == active_id:
+            selected_index = item_index
+
+    sky_selector.select(selected_index)
+    sky_selector.item_selected.connect(func(index: int):
+        SkyCatalog.set_active_sky(
+            str(sky_selector.get_item_metadata(index))
+        )
+    )
+    menu_content.add_child(sky_selector)
+
     var note := Label.new()
-    note.text = "Hitboxes show exact physics collision shapes. Laser range shows the 40-cell activation boundary measured from each laser's 1x1x1 builder cell."
+    note.text = "Hitboxes show exact physics collision shapes. Laser range shows the 40-cell activation boundary measured from each laser's 1x1x1 builder cell. Sky generation pauses flight and checkpoints to JSON for crash-safe resume."
     note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     note.modulate.a = 0.76
     menu_content.add_child(note)
+
+
+
+
+func _open_sky_generation_dialog(resume_existing: bool) -> void:
+    var dialog := SkyGenerationDialog.new()
+    add_child(dialog)
+
+    if resume_existing:
+        dialog.start_resume()
+    else:
+        dialog.start_new()
 
 
 func _close_menu() -> void:
@@ -1421,6 +1505,10 @@ func _notification(what: int) -> void:
 
 
 func _physics_process(delta: float) -> void:
+    if SkyCatalog.is_generating():
+        _set_thruster_emission(false)
+        return
+
     if menu_open:
         _set_thruster_emission(false)
         return
