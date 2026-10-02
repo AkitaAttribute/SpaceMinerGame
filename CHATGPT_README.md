@@ -1158,3 +1158,57 @@ When adding features, prefer this style over brute-force node counts or camera-d
 ## 22. One-sentence state summary
 
 The project is currently a working Godot 4.7.1 modular ship builder with persistent models, a test-flight scene, actual part-shaped ship collision, independent multi-laser asteroid mining, auto-orbit, a full 420-asteroid moving planetary ring, and a simplified slot-based color UI; the most important regression risks are asteroid rendering/culling, multi-laser reservation edge cases, and preserving exact ship collision without reintroducing a giant bounding box.
+
+
+## 21. Generated distant-space skies
+
+The simulation no longer depends on an image panorama skybox. It renders a static
+distant-space catalog with instanced star and nebula quads.
+
+Relevant files:
+
+- `scripts/distant_space.gd`
+- `scripts/sky_catalog.gd`
+- `scripts/sky_generation_dialog.gd`
+- `assets/space/distant_space_catalog.csv` (built-in fallback)
+
+Settings -> Debug now contains:
+
+- `Generate Skybox`
+- `Resume Skybox Generation` when an interrupted checkpoint exists
+- `Discard Interrupted Generation`
+- an `Active sky` selector containing the built-in sky and all completed
+  generated skies
+
+Generated skies are stored under `user://skyboxes/` as separate JSON files.
+`index.json` tracks completed skies and the active selection.
+
+Generation creates:
+
+- 10,000 isotropically distributed stars
+- 6 nebula clouds
+- 300 particles per cloud / 1,800 nebula particles total
+
+Generation is incremental and runs through the global `SkyCatalog` autoload.
+While generation is running:
+
+- the SceneTree is paused,
+- main/builder input is explicitly blocked,
+- simulation input and physics are explicitly blocked because those scene roots
+  normally run with `PROCESS_MODE_ALWAYS`,
+- a modal circular progress indicator shows completion percentage,
+- `Pause and Save` writes a resumable checkpoint.
+
+Crash/closure recovery uses alternating checkpoint JSON files:
+
+- `generation_checkpoint_a.json`
+- `generation_checkpoint_b.json`
+
+The generator writes a checkpoint every 384 generated records. The alternating
+files ensure that a crash during one checkpoint write leaves the previous
+checkpoint available. Resuming restores the exact PRNG state and continues from
+the latest valid checkpoint.
+
+A completed generated sky is automatically made active. The simulation listens
+for `SkyCatalog.active_sky_changed` and reloads the distant-space renderer when
+the selection changes.
