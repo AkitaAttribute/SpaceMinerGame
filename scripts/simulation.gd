@@ -146,6 +146,8 @@ var performance_log_elapsed := 0.0
 var performance_pipeline_baseline: Dictionary = {}
 var performance_near_asteroids := 0
 var performance_collision_range_asteroids := 0
+var performance_hitches_25ms := 0
+var performance_hitches_50ms := 0
 
 var mobile_joystick: VirtualJoystick
 var mobile_last_turn_sign := 1.0
@@ -1172,6 +1174,13 @@ func _show_flight_debug_menu() -> void:
     performance_metrics.toggled.connect(_set_performance_metrics_visible)
     menu_content.add_child(performance_metrics)
 
+    if performance_metrics_visible:
+        var reset_performance := Button.new()
+        reset_performance.text = "Reset performance history"
+        reset_performance.custom_minimum_size = Vector2(0.0, 44.0)
+        reset_performance.pressed.connect(_reset_performance_metrics)
+        menu_content.add_child(reset_performance)
+
     var checkpoint := SkyCatalog.get_checkpoint_summary()
     var generation := Button.new()
     generation.text = (
@@ -1292,9 +1301,7 @@ func _set_performance_metrics_visible(value: bool) -> void:
         performance_panel.visible = value
 
     if value:
-        performance_samples.clear()
-        performance_display_elapsed = 0.0
-        performance_log_elapsed = 0.0
+        _reset_performance_metrics()
         performance_pipeline_baseline = {
             "mesh": int(Performance.get_monitor(
                 Performance.PIPELINE_COMPILATIONS_MESH
@@ -1312,6 +1319,30 @@ func _set_performance_metrics_visible(value: bool) -> void:
         )
     else:
         AppLogger.event("PERF disabled.")
+
+
+func _reset_performance_metrics() -> void:
+    performance_samples.clear()
+    performance_display_elapsed = 0.0
+    performance_log_elapsed = 0.0
+    performance_hitches_25ms = 0
+    performance_hitches_50ms = 0
+
+    performance_pipeline_baseline = {
+        "mesh": int(Performance.get_monitor(
+            Performance.PIPELINE_COMPILATIONS_MESH
+        )),
+        "surface": int(Performance.get_monitor(
+            Performance.PIPELINE_COMPILATIONS_SURFACE
+        )),
+        "draw": int(Performance.get_monitor(
+            Performance.PIPELINE_COMPILATIONS_DRAW
+        )),
+    }
+
+    if performance_metrics_visible:
+        _update_performance_metrics_display()
+        AppLogger.event("PERF history reset.")
 
 
 func _performance_record_elapsed(key: String, start_usec: int) -> void:
@@ -1472,7 +1503,11 @@ func _performance_snapshot_text() -> String:
             mining_lasers.size(),
             tractor_chunks.size(),
         ],
-        "Pipeline compiles since enabled: mesh +%d  surface +%d  draw +%d" % [
+        "Hitches >=25 ms: %d   >=50 ms: %d" % [
+            performance_hitches_25ms,
+            performance_hitches_50ms,
+        ],
+        "Pipeline compiles since reset: mesh +%d  surface +%d  draw +%d" % [
             maxi(0, mesh_compiles),
             maxi(0, surface_compiles),
             maxi(0, draw_compiles),
@@ -1777,7 +1812,15 @@ func _process(delta: float) -> void:
     if not performance_metrics_visible:
         return
 
-    _performance_record("frame", delta * 1000.0)
+    var frame_ms := delta * 1000.0
+    _performance_record("frame", frame_ms)
+
+    if frame_ms >= 50.0:
+        performance_hitches_50ms += 1
+        performance_hitches_25ms += 1
+    elif frame_ms >= 25.0:
+        performance_hitches_25ms += 1
+
     performance_display_elapsed += delta
     performance_log_elapsed += delta
 
