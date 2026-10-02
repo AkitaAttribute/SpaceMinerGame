@@ -710,8 +710,8 @@ func _build_ui() -> void:
 
     menu_panel = PanelContainer.new()
     menu_panel.set_anchors_preset(Control.PRESET_CENTER)
-    menu_panel.position = Vector2(-240.0, -220.0)
-    menu_panel.size = Vector2(480.0, 440.0)
+    menu_panel.position = Vector2(-240.0, -300.0)
+    menu_panel.size = Vector2(480.0, 600.0)
     menu_panel.visible = false
     root.add_child(menu_panel)
 
@@ -1143,6 +1143,12 @@ func _show_flight_debug_menu() -> void:
         checkpoint_label.modulate.a = 0.76
         menu_content.add_child(checkpoint_label)
 
+        var discard := Button.new()
+        discard.text = "Discard Interrupted Generation"
+        discard.custom_minimum_size = Vector2(0.0, 48.0)
+        discard.pressed.connect(_discard_sky_generation_checkpoint)
+        menu_content.add_child(discard)
+
     var sky_label := Label.new()
     sky_label.text = "Active sky"
     sky_label.modulate.a = 0.82
@@ -1188,6 +1194,11 @@ func _open_sky_generation_dialog(resume_existing: bool) -> void:
         dialog.start_resume()
     else:
         dialog.start_new()
+
+
+func _discard_sky_generation_checkpoint() -> void:
+    SkyCatalog.discard_checkpoint()
+    _show_flight_debug_menu()
 
 
 func _close_menu() -> void:
