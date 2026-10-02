@@ -62,6 +62,10 @@ const TRACTOR_START_SPEED := 4.0
 const TRACTOR_ACCELERATION := 5.5
 const TRACTOR_MAX_SPEED := 10.0
 
+const PERF_SAMPLE_WINDOW := 180
+const PERF_DISPLAY_INTERVAL := 0.50
+const PERF_LOG_INTERVAL := 5.0
+
 var ship_id := ""
 var ship_body: CharacterBody3D
 var ship_visual_root: Node3D
@@ -132,6 +136,16 @@ var debug_hitboxes_visible := false
 var ship_debug_hitbox: Node3D
 var debug_laser_range_visible := false
 var laser_range_debug_root: Node3D
+
+var performance_metrics_visible := false
+var performance_panel: PanelContainer
+var performance_label: Label
+var performance_samples: Dictionary = {}
+var performance_display_elapsed := 0.0
+var performance_log_elapsed := 0.0
+var performance_pipeline_baseline: Dictionary = {}
+var performance_near_asteroids := 0
+var performance_collision_range_asteroids := 0
 
 var mobile_joystick: VirtualJoystick
 var mobile_last_turn_sign := 1.0
@@ -701,6 +715,7 @@ func _build_ui() -> void:
 
     _build_auto_orbit_toggle(root)
     _build_mining_laser_status_panel(root)
+    _build_performance_panel(root)
 
     menu_dim = ColorRect.new()
     menu_dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -726,6 +741,39 @@ func _build_ui() -> void:
     menu_content = VBoxContainer.new()
     menu_content.add_theme_constant_override("separation", 12)
     margin.add_child(menu_content)
+
+
+func _build_performance_panel(root: Control) -> void:
+    performance_panel = PanelContainer.new()
+    performance_panel.name = "PerformanceMetrics"
+    performance_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+    performance_panel.offset_left = 16.0
+    performance_panel.offset_top = 16.0
+    performance_panel.offset_right = 536.0
+    performance_panel.offset_bottom = 390.0
+    performance_panel.visible = false
+    performance_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+    var panel_style := StyleBoxFlat.new()
+    panel_style.bg_color = Color(0.015, 0.022, 0.038, 0.92)
+    panel_style.border_color = Color(0.60, 0.70, 0.85, 0.36)
+    panel_style.set_border_width_all(1)
+    panel_style.set_corner_radius_all(10)
+    performance_panel.add_theme_stylebox_override("panel", panel_style)
+    root.add_child(performance_panel)
+
+    var margin := MarginContainer.new()
+    margin.add_theme_constant_override("margin_left", 12)
+    margin.add_theme_constant_override("margin_right", 12)
+    margin.add_theme_constant_override("margin_top", 10)
+    margin.add_theme_constant_override("margin_bottom", 10)
+    performance_panel.add_child(margin)
+
+    performance_label = Label.new()
+    performance_label.text = "Performance metrics initializing..."
+    performance_label.add_theme_font_size_override("font_size", 13)
+    performance_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    margin.add_child(performance_label)
 
 
 func _build_auto_orbit_toggle(root: Control) -> void:
@@ -1118,6 +1166,12 @@ func _show_flight_debug_menu() -> void:
     laser_range.toggled.connect(_set_debug_laser_range_visible)
     menu_content.add_child(laser_range)
 
+    var performance_metrics := CheckButton.new()
+    performance_metrics.text = "Show performance metrics"
+    performance_metrics.button_pressed = performance_metrics_visible
+    performance_metrics.toggled.connect(_set_performance_metrics_visible)
+    menu_content.add_child(performance_metrics)
+
     var checkpoint := SkyCatalog.get_checkpoint_summary()
     var generation := Button.new()
     generation.text = (
@@ -1229,6 +1283,209 @@ func _flight_menu_action(action: String) -> void:
                 Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
             ShipStore.request_view("selector")
             get_tree().change_scene_to_file("res://main.tscn")
+
+
+func _set_performance_metrics_visible(value: bool) -> void:
+    performance_metrics_visible = value
+
+    if performance_panel != null:
+        performance_panel.visible = value
+
+    if value:
+        performance_samples.clear()
+        performance_display_elapsed = 0.0
+        performance_log_elapsed = 0.0
+        performance_pipeline_baseline = {
+            "mesh": int(Performance.get_monitor(
+                Performance.PIPELINE_COMPILATIONS_MESH
+            )),
+            "surface": int(Performance.get_monitor(
+                Performance.PIPELINE_COMPILATIONS_SURFACE
+            )),
+            "draw": int(Performance.get_monitor(
+                Performance.PIPELINE_COMPILATIONS_DRAW
+            )),
+        }
+        _update_performance_metrics_display()
+        AppLogger.event(
+            "PERF enabled. Rolling window=%d frames." % PERF_SAMPLE_WINDOW
+        )
+    else:
+        AppLogger.event("PERF disabled.")
+
+
+func _performance_record_elapsed(key: String, start_usec: int) -> void:
+    var elapsed_ms := float(
+        Time.get_ticks_usec() - start_usec
+    ) / 1000.0
+    _performance_record(key, elapsed_ms)
+
+
+func _performance_record(key: String, value_ms: float) -> void:
+    var samples := performance_samples.get(key, []) as Array
+    samples.append(value_ms)
+
+    if samples.size() > PERF_SAMPLE_WINDOW:
+        samples.remove_at(0)
+
+    performance_samples[key] = samples
+
+
+func _performance_stats(key: String) -> Vector3:
+    var samples := performance_samples.get(key, []) as Array
+    if samples.is_empty():
+        return Vector3.ZERO
+
+    var total := 0.0
+    var maximum := 0.0
+    var sorted := samples.duplicate()
+
+    for value in samples:
+        var sample := float(value)
+        total += sample
+        maximum = maxf(maximum, sample)
+
+    sorted.sort()
+    var percentile_index := clampi(
+        int(ceil(float(sorted.size()) * 0.95)) - 1,
+        0,
+        sorted.size() - 1
+    )
+    var p95 := float(sorted[percentile_index])
+
+    return Vector3(
+        total / float(samples.size()),
+        p95,
+        maximum
+    )
+
+
+func _performance_format_stats(label: String, key: String) -> String:
+    var stats := _performance_stats(key)
+    return "%-14s %6.2f / %6.2f / %6.2f ms" % [
+        label,
+        stats.x,
+        stats.y,
+        stats.z,
+    ]
+
+
+func _performance_monitor_ms(monitor: Performance.Monitor) -> float:
+    return Performance.get_monitor(monitor) * 1000.0
+
+
+func _performance_mb(bytes_value: float) -> float:
+    return bytes_value / (1024.0 * 1024.0)
+
+
+func _performance_snapshot_text() -> String:
+    var frame := _performance_stats("frame")
+    var fps := Performance.get_monitor(Performance.TIME_FPS)
+    var engine_process_ms := _performance_monitor_ms(
+        Performance.TIME_PROCESS
+    )
+    var engine_physics_ms := _performance_monitor_ms(
+        Performance.TIME_PHYSICS_PROCESS
+    )
+
+    var render_objects := int(Performance.get_monitor(
+        Performance.RENDER_TOTAL_OBJECTS_IN_FRAME
+    ))
+    var render_primitives := int(Performance.get_monitor(
+        Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME
+    ))
+    var draw_calls := int(Performance.get_monitor(
+        Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME
+    ))
+
+    var texture_mb := _performance_mb(Performance.get_monitor(
+        Performance.RENDER_TEXTURE_MEM_USED
+    ))
+    var buffer_mb := _performance_mb(Performance.get_monitor(
+        Performance.RENDER_BUFFER_MEM_USED
+    ))
+    var video_mb := _performance_mb(Performance.get_monitor(
+        Performance.RENDER_VIDEO_MEM_USED
+    ))
+
+    var physics_active := int(Performance.get_monitor(
+        Performance.PHYSICS_3D_ACTIVE_OBJECTS
+    ))
+    var physics_pairs := int(Performance.get_monitor(
+        Performance.PHYSICS_3D_COLLISION_PAIRS
+    ))
+    var nodes := int(Performance.get_monitor(
+        Performance.OBJECT_NODE_COUNT
+    ))
+
+    var mesh_compiles := int(Performance.get_monitor(
+        Performance.PIPELINE_COMPILATIONS_MESH
+    )) - int(performance_pipeline_baseline.get("mesh", 0))
+    var surface_compiles := int(Performance.get_monitor(
+        Performance.PIPELINE_COMPILATIONS_SURFACE
+    )) - int(performance_pipeline_baseline.get("surface", 0))
+    var draw_compiles := int(Performance.get_monitor(
+        Performance.PIPELINE_COMPILATIONS_DRAW
+    )) - int(performance_pipeline_baseline.get("draw", 0))
+
+    var lines: Array[String] = [
+        "PERFORMANCE  avg / p95 / max",
+        "FPS %5.1f   frame %6.2f / %6.2f / %6.2f ms" % [
+            fps,
+            frame.x,
+            frame.y,
+            frame.z,
+        ],
+        "Engine process %6.2f ms   physics %6.2f ms" % [
+            engine_process_ms,
+            engine_physics_ms,
+        ],
+        _performance_format_stats("Script physics", "script_physics_total"),
+        _performance_format_stats("Collision sync", "collision_sync"),
+        _performance_format_stats("Ship motion", "ship_motion"),
+        _performance_format_stats("Asteroids", "asteroids"),
+        _performance_format_stats("Tractor", "tractor"),
+        _performance_format_stats("Mining lasers", "mining_lasers"),
+        _performance_format_stats("Camera", "camera"),
+        "",
+        "Render objects %d   draws %d   primitives %d" % [
+            render_objects,
+            draw_calls,
+            render_primitives,
+        ],
+        "VRAM %.1f MB   textures %.1f   buffers %.1f" % [
+            video_mb,
+            texture_mb,
+            buffer_mb,
+        ],
+        "Physics3D active %d   pairs %d   scene nodes %d" % [
+            physics_active,
+            physics_pairs,
+            nodes,
+        ],
+        "Asteroids %d   near %d   collision-range %d" % [
+            asteroids.size(),
+            performance_near_asteroids,
+            performance_collision_range_asteroids,
+        ],
+        "Lasers %d   tractor chunks %d" % [
+            mining_lasers.size(),
+            tractor_chunks.size(),
+        ],
+        "Pipeline compiles since enabled: mesh +%d  surface +%d  draw +%d" % [
+            maxi(0, mesh_compiles),
+            maxi(0, surface_compiles),
+            maxi(0, draw_compiles),
+        ],
+    ]
+
+    return "\n".join(lines)
+
+
+func _update_performance_metrics_display() -> void:
+    if performance_label == null:
+        return
+    performance_label.text = _performance_snapshot_text()
 
 
 func _set_debug_laser_range_visible(value: bool) -> void:
@@ -1516,6 +1773,25 @@ func _notification(what: int) -> void:
             Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
+func _process(delta: float) -> void:
+    if not performance_metrics_visible:
+        return
+
+    _performance_record("frame", delta * 1000.0)
+    performance_display_elapsed += delta
+    performance_log_elapsed += delta
+
+    if performance_display_elapsed >= PERF_DISPLAY_INTERVAL:
+        performance_display_elapsed = 0.0
+        _update_performance_metrics_display()
+
+    if performance_log_elapsed >= PERF_LOG_INTERVAL:
+        performance_log_elapsed = 0.0
+        AppLogger.event(
+            "PERF " + _performance_snapshot_text().replace("\n", " | ")
+        )
+
+
 func _physics_process(delta: float) -> void:
     if SkyCatalog.is_generating():
         _set_thruster_emission(false)
@@ -1525,13 +1801,47 @@ func _physics_process(delta: float) -> void:
         _set_thruster_emission(false)
         return
 
+    if not performance_metrics_visible:
+        _sync_ship_collision_transforms()
+        _update_ship_motion(delta)
+        _update_asteroids(delta)
+        _update_tractor_chunks(delta)
+        _update_mining_lasers(delta)
+        _sync_ship_collision_transforms()
+        _update_camera(delta)
+        return
+
+    var physics_start := Time.get_ticks_usec()
+    var section_start := physics_start
+
     _sync_ship_collision_transforms()
+    _performance_record_elapsed("collision_sync", section_start)
+
+    section_start = Time.get_ticks_usec()
     _update_ship_motion(delta)
+    _performance_record_elapsed("ship_motion", section_start)
+
+    section_start = Time.get_ticks_usec()
     _update_asteroids(delta)
+    _performance_record_elapsed("asteroids", section_start)
+
+    section_start = Time.get_ticks_usec()
     _update_tractor_chunks(delta)
+    _performance_record_elapsed("tractor", section_start)
+
+    section_start = Time.get_ticks_usec()
     _update_mining_lasers(delta)
+    _performance_record_elapsed("mining_lasers", section_start)
+
+    section_start = Time.get_ticks_usec()
     _sync_ship_collision_transforms()
+    _performance_record_elapsed("collision_sync", section_start)
+
+    section_start = Time.get_ticks_usec()
     _update_camera(delta)
+    _performance_record_elapsed("camera", section_start)
+
+    _performance_record_elapsed("script_physics_total", physics_start)
 
 
 func _update_ship_motion(delta: float) -> void:
@@ -2156,6 +2466,8 @@ func _spawn_initial_asteroids() -> void:
 
 func _update_asteroids(delta: float) -> void:
     var detail_distance := _asteroid_detail_distance()
+    var near_count := 0
+    var collision_range_count := 0
 
     asteroid_render_update_time += delta
     var update_far_physics := (
@@ -2174,6 +2486,7 @@ func _update_asteroids(delta: float) -> void:
         )
 
         if distance <= detail_distance:
+            near_count += 1
             # Nearby asteroids retain the original full update path.
             asteroid.update_spin(delta)
         else:
@@ -2182,10 +2495,17 @@ func _update_asteroids(delta: float) -> void:
             # spin and physics are reduced at distance.
             asteroid.update_far_orbit(delta)
 
+        if distance <= ASTEROID_PHYSICS_ACTIVE_DISTANCE:
+            collision_range_count += 1
+
         if update_far_physics:
             asteroid.set_collision_active(
                 distance <= ASTEROID_PHYSICS_ACTIVE_DISTANCE
             )
+
+    if performance_metrics_visible:
+        performance_near_asteroids = near_count
+        performance_collision_range_asteroids = collision_range_count
 
 
 func _asteroid_detail_distance() -> float:
