@@ -4,6 +4,14 @@ extends Node3D
 const DEFAULT_CATALOG_PATH := "res://assets/space/distant_space_catalog.csv"
 const EXPECTED_FORMAT := "SPACE_FIELD_V1"
 
+# At 6200 units, a 3.4-unit star is only ~0.34 pixels across in the
+# project's 720p render viewport at 60 degrees vertical FOV. Sub-pixel
+# geometry aliases badly during camera motion and looks like fake twinkling.
+# Keep stars a little over one pixel wide, then reduce their intensity to
+# preserve the intended point-source brightness.
+const MIN_STAR_RENDER_SIZE := 11.0
+const STAR_STABILITY_ALPHA_EXPONENT := 1.5
+
 
 func build_active_or_default() -> bool:
     var active_path := SkyCatalog.get_active_sky_path()
@@ -59,12 +67,24 @@ func build_from_json(path: String) -> bool:
 
     var star_index := 0
     for value in stars_data:
-        if _apply_json_record(stars, star_index, value, star_radius):
+        if _apply_json_record(
+            stars,
+            star_index,
+            value,
+            star_radius,
+            true
+        ):
             star_index += 1
 
     var nebula_index := 0
     for value in nebula_data:
-        if _apply_json_record(nebulae, nebula_index, value, nebula_radius):
+        if _apply_json_record(
+            nebulae,
+            nebula_index,
+            value,
+            nebula_radius,
+            false
+        ):
             nebula_index += 1
 
     stars.multimesh.visible_instance_count = star_index
@@ -76,7 +96,8 @@ func _apply_json_record(
     layer: MultiMeshInstance3D,
     index: int,
     value,
-    radius: float
+    radius: float,
+    stabilize_star: bool
 ) -> bool:
     if not (value is Array):
         return false
@@ -94,7 +115,8 @@ func _apply_json_record(
         return false
     direction = direction.normalized()
 
-    var size := float(record[3])
+    var original_size := float(record[3])
+    var render_size := original_size
     var tint := Color(
         float(record[4]),
         float(record[5]),
@@ -102,9 +124,17 @@ func _apply_json_record(
         float(record[7])
     )
 
+    if stabilize_star:
+        render_size = maxf(original_size, MIN_STAR_RENDER_SIZE)
+        tint = _stabilize_star_tint(
+            tint,
+            original_size,
+            render_size
+        )
+
     layer.multimesh.set_instance_transform(
         index,
-        _tangent_transform(direction, radius, size)
+        _tangent_transform(direction, radius, render_size)
     )
     layer.multimesh.set_instance_custom_data(index, tint)
     return true
@@ -163,7 +193,7 @@ func build_from_catalog(path: String = DEFAULT_CATALOG_PATH) -> bool:
             continue
         direction = direction.normalized()
 
-        var size := float(values[4])
+        var original_size := float(values[4])
         var tint := Color(
             float(values[5]),
             float(values[6]),
@@ -174,18 +204,39 @@ func build_from_catalog(path: String = DEFAULT_CATALOG_PATH) -> bool:
         if kind == "S":
             if star_index >= star_count:
                 continue
+
+            var render_size := maxf(
+                original_size,
+                MIN_STAR_RENDER_SIZE
+            )
+            var stable_tint := _stabilize_star_tint(
+                tint,
+                original_size,
+                render_size
+            )
             stars.multimesh.set_instance_transform(
                 star_index,
-                _tangent_transform(direction, star_radius, size)
+                _tangent_transform(
+                    direction,
+                    star_radius,
+                    render_size
+                )
             )
-            stars.multimesh.set_instance_custom_data(star_index, tint)
+            stars.multimesh.set_instance_custom_data(
+                star_index,
+                stable_tint
+            )
             star_index += 1
         else:
             if nebula_index >= nebula_count:
                 continue
             nebulae.multimesh.set_instance_transform(
                 nebula_index,
-                _tangent_transform(direction, nebula_radius, size)
+                _tangent_transform(
+                    direction,
+                    nebula_radius,
+                    original_size
+                )
             )
             nebulae.multimesh.set_instance_custom_data(nebula_index, tint)
             nebula_index += 1
@@ -200,6 +251,35 @@ func build_from_catalog(path: String = DEFAULT_CATALOG_PATH) -> bool:
         )
 
     return star_index > 0
+
+
+func _stabilize_star_tint(
+    tint: Color,
+    original_size: float,
+    render_size: float
+) -> Color:
+    if render_size <= original_size + 0.0001:
+        return tint
+
+    # Enlarging the quad prevents sub-pixel on/off aliasing. Reduce brightness
+    # as the footprint grows so a stabilized tiny star still reads as a distant
+    # point rather than a larger luminous object.
+    var size_ratio := clampf(
+        original_size / render_size,
+        0.0,
+        1.0
+    )
+    var brightness_scale := pow(
+        size_ratio,
+        STAR_STABILITY_ALPHA_EXPONENT
+    )
+
+    return Color(
+        tint.r,
+        tint.g,
+        tint.b,
+        tint.a * brightness_scale
+    )
 
 
 func _create_layer(
@@ -267,13 +347,22 @@ void vertex() {
 
 void fragment() {
     vec2 p = UV * 2.0 - vec2(1.0);
-    float radius = length(p);
-    float halo = 1.0 - smoothstep(0.18, 1.0, radius);
-    float core = 1.0 - smoothstep(0.0, 0.24, radius);
-    float intensity = clamp(core + halo * 0.48, 0.0, 1.0) * instance_tint.a;
+    float radius_sq = dot(p, p);
+
+    // Smooth Gaussian-like profiles avoid a hard sub-pixel edge changing
+    // coverage abruptly as the camera rotates.
+    float halo = exp(-radius_sq * 4.5);
+    float core = exp(-radius_sq * 30.0);
+    float intensity = (
+        halo * 0.58
+        + core * 0.62
+    ) * instance_tint.a;
 
     ALBEDO = instance_tint.rgb * intensity;
-    EMISSION = instance_tint.rgb * (1.45 * intensity + 0.75 * core * instance_tint.a);
+    EMISSION = instance_tint.rgb * (
+        intensity * 1.55
+        + core * instance_tint.a * 0.45
+    );
     ALPHA = intensity;
 }
 """
