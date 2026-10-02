@@ -12,9 +12,9 @@ const INDEX_PATH := SKY_DIR + "/index.json"
 const CHECKPOINT_A_PATH := SKY_DIR + "/generation_checkpoint_a.json"
 const CHECKPOINT_B_PATH := SKY_DIR + "/generation_checkpoint_b.json"
 
-const SKY_FORMAT := "SPACE_FIELD_V1"
-const GENERATION_FORMAT := "SPACE_FIELD_GENERATION_V1"
-const INDEX_FORMAT := "SPACE_FIELD_INDEX_V1"
+const SKY_FORMAT := "SPACE_FIELD_V2"
+const GENERATION_FORMAT := "SPACE_FIELD_GENERATION_V2"
+const INDEX_FORMAT := "SPACE_FIELD_INDEX_V2"
 
 const STAR_COUNT := 10000
 const CLOUD_COUNT := 6
@@ -23,14 +23,23 @@ const NEBULA_COUNT := CLOUD_COUNT * PARTICLES_PER_CLOUD
 const STAR_RADIUS := 6200.0
 const NEBULA_RADIUS := 5900.0
 
+# The generated source data is baked into one static 2:1 equirectangular
+# panorama. Runtime never renders the individual star/nebula objects.
+const PANORAMA_WIDTH := 8192
+const PANORAMA_HEIGHT := 4096
+const MIN_STAR_PANORAMA_RADIUS := 1.25
+
 const ITEMS_PER_FRAME := 96
+const BAKE_ITEMS_PER_FRAME := 12
 const CHECKPOINT_INTERVAL := 384
+const BAKE_IMAGE_CHECKPOINT_INTERVAL := 2048
 
 var _generating := false
 var _generation_state: Dictionary = {}
 var _rng_state := 1
 var _items_since_checkpoint := 0
 var _previous_tree_paused := false
+var _bake_image: Image
 
 
 func _ready() -> void:
@@ -43,10 +52,17 @@ func _process(_delta: float) -> void:
     if not _generating:
         return
 
+    var phase := str(_generation_state.get("phase", "stars"))
+
+    if phase == "bake":
+        _process_bake()
+        _emit_progress()
+        return
+
     var remaining := ITEMS_PER_FRAME
 
     while remaining > 0 and _generating:
-        var phase := str(_generation_state.get("phase", "stars"))
+        phase = str(_generation_state.get("phase", "stars"))
 
         if phase == "stars":
             var stars := _generation_state.get("stars", []) as Array
@@ -54,7 +70,6 @@ func _process(_delta: float) -> void:
                 _prepare_nebula_clouds()
                 _generation_state["phase"] = "nebulae"
                 _save_checkpoint()
-                _emit_progress()
                 continue
 
             stars.append(_generate_star_record())
@@ -65,8 +80,9 @@ func _process(_delta: float) -> void:
         elif phase == "nebulae":
             var nebulae := _generation_state.get("nebulae", []) as Array
             if nebulae.size() >= NEBULA_COUNT:
-                _complete_generation()
-                return
+                if not _begin_bake_phase():
+                    return
+                break
 
             nebulae.append(_generate_nebula_record(nebulae.size()))
             _generation_state["nebulae"] = nebulae
@@ -98,9 +114,10 @@ func start_generation() -> bool:
 
     _rng_state = seed
     _items_since_checkpoint = 0
+    _bake_image = null
     _generation_state = {
         "format": GENERATION_FORMAT,
-        "version": 1,
+        "version": 2,
         "status": "in_progress",
         "job_id": job_id,
         "name": _make_sky_name(),
@@ -113,9 +130,12 @@ func start_generation() -> bool:
         "nebula_count": NEBULA_COUNT,
         "star_radius": STAR_RADIUS,
         "nebula_radius": NEBULA_RADIUS,
+        "panorama_width": PANORAMA_WIDTH,
+        "panorama_height": PANORAMA_HEIGHT,
         "stars": [],
         "nebulae": [],
         "clouds": [],
+        "bake_index": 0,
     }
 
     _generating = true
@@ -139,6 +159,10 @@ func resume_generation() -> bool:
     _generation_state["status"] = "in_progress"
     _rng_state = int(_generation_state.get("rng_state", 1))
     _items_since_checkpoint = 0
+    _bake_image = null
+
+    if str(_generation_state.get("phase", "")) == "bake":
+        _restore_bake_image()
 
     _generating = true
     _begin_blocking()
@@ -153,7 +177,12 @@ func pause_generation() -> void:
         return
 
     _generation_state["status"] = "paused"
-    _save_checkpoint()
+
+    if str(_generation_state.get("phase", "")) == "bake":
+        _save_bake_checkpoint()
+    else:
+        _save_checkpoint()
+
     _generating = false
     set_process(false)
     _end_blocking()
@@ -173,22 +202,25 @@ func get_checkpoint_summary() -> Dictionary:
     if checkpoint.is_empty():
         return {}
 
-    var stars := checkpoint.get("stars", []) as Array
-    var nebulae := checkpoint.get("nebulae", []) as Array
-    var completed := stars.size() + nebulae.size()
-    var total := STAR_COUNT + NEBULA_COUNT
-
     return {
         "name": str(checkpoint.get("name", "Interrupted Sky")),
-        "progress": float(completed) / float(maxi(1, total)),
-        "stars": stars.size(),
-        "nebulae": nebulae.size(),
+        "progress": _progress_for_state(checkpoint),
+        "stars": (checkpoint.get("stars", []) as Array).size(),
+        "nebulae": (checkpoint.get("nebulae", []) as Array).size(),
+        "phase": str(checkpoint.get("phase", "stars")),
     }
 
 
 func discard_checkpoint() -> void:
     if _generating:
         return
+
+    var checkpoint := _load_best_checkpoint()
+    if not checkpoint.is_empty():
+        var work_path := str(checkpoint.get("panorama_work_path", ""))
+        if not work_path.is_empty() and FileAccess.file_exists(work_path):
+            DirAccess.remove_absolute(ProjectSettings.globalize_path(work_path))
+
     _clear_checkpoints()
 
 
@@ -199,9 +231,10 @@ func list_skies() -> Array[Dictionary]:
     for value in index.get("skies", []):
         if not (value is Dictionary):
             continue
+
         var entry := value as Dictionary
-        var path := str(entry.get("path", ""))
-        if not path.is_empty() and FileAccess.file_exists(path):
+        var panorama_path := str(entry.get("panorama_path", ""))
+        if not panorama_path.is_empty() and FileAccess.file_exists(panorama_path):
             result.append(entry)
 
     return result
@@ -211,7 +244,7 @@ func get_active_sky_id() -> String:
     return str(_load_index().get("active", ""))
 
 
-func get_active_sky_path() -> String:
+func get_active_panorama_path() -> String:
     var index := _load_index()
     var active_id := str(index.get("active", ""))
     if active_id.is_empty():
@@ -220,15 +253,32 @@ func get_active_sky_path() -> String:
     for value in index.get("skies", []):
         if not (value is Dictionary):
             continue
+
         var entry := value as Dictionary
         if str(entry.get("id", "")) != active_id:
             continue
 
-        var path := str(entry.get("path", ""))
-        if FileAccess.file_exists(path):
-            return path
+        var panorama_path := str(entry.get("panorama_path", ""))
+        if FileAccess.file_exists(panorama_path):
+            return panorama_path
         break
 
+    return ""
+
+
+func get_active_sky_path() -> String:
+    var index := _load_index()
+    var active_id := str(index.get("active", ""))
+    if active_id.is_empty():
+        return ""
+
+    for value in index.get("skies", []):
+        if value is Dictionary:
+            var entry := value as Dictionary
+            if str(entry.get("id", "")) == active_id:
+                var source_path := str(entry.get("source_path", ""))
+                if FileAccess.file_exists(source_path):
+                    return source_path
     return ""
 
 
@@ -236,7 +286,7 @@ func get_active_sky_name() -> String:
     var index := _load_index()
     var active_id := str(index.get("active", ""))
     if active_id.is_empty():
-        return "Built-in Sky"
+        return "Black Background"
 
     for value in index.get("skies", []):
         if value is Dictionary:
@@ -244,7 +294,7 @@ func get_active_sky_name() -> String:
             if str(entry.get("id", "")) == active_id:
                 return str(entry.get("name", "Generated Sky"))
 
-    return "Built-in Sky"
+    return "Black Background"
 
 
 func set_active_sky(sky_id: String) -> bool:
@@ -260,18 +310,20 @@ func set_active_sky(sky_id: String) -> bool:
     for value in index.get("skies", []):
         if not (value is Dictionary):
             continue
+
         var entry := value as Dictionary
         if str(entry.get("id", "")) != sky_id:
             continue
 
-        var path := str(entry.get("path", ""))
-        if not FileAccess.file_exists(path):
+        var panorama_path := str(entry.get("panorama_path", ""))
+        if not FileAccess.file_exists(panorama_path):
             return false
 
         index["active"] = sky_id
         if not _write_json_atomic(INDEX_PATH, index):
             return false
-        active_sky_changed.emit(path)
+
+        active_sky_changed.emit(panorama_path)
         return true
 
     return false
@@ -287,25 +339,50 @@ func _end_blocking() -> void:
 
 
 func _emit_progress() -> void:
-    var stars := _generation_state.get("stars", []) as Array
-    var nebulae := _generation_state.get("nebulae", []) as Array
-    var completed := stars.size() + nebulae.size()
-    var total := STAR_COUNT + NEBULA_COUNT
-    var progress := float(completed) / float(maxi(1, total))
-
+    var progress := _progress_for_state(_generation_state)
+    var phase := str(_generation_state.get("phase", "stars"))
     var status := ""
-    if str(_generation_state.get("phase", "stars")) == "stars":
+
+    if phase == "stars":
+        var stars := _generation_state.get("stars", []) as Array
         status = "Generating stars: %s / %s" % [
             _format_number(stars.size()),
             _format_number(STAR_COUNT),
         ]
-    else:
+    elif phase == "nebulae":
+        var nebulae := _generation_state.get("nebulae", []) as Array
         status = "Generating nebula particles: %s / %s" % [
             _format_number(nebulae.size()),
             _format_number(NEBULA_COUNT),
         ]
+    elif phase == "bake":
+        var bake_index := int(_generation_state.get("bake_index", 0))
+        status = "Baking 8192 x 4096 static panorama: %s / %s objects" % [
+            _format_number(bake_index),
+            _format_number(STAR_COUNT + NEBULA_COUNT),
+        ]
+    else:
+        status = "Preparing sky..."
 
     generation_progress.emit(progress, status)
+
+
+func _progress_for_state(state: Dictionary) -> float:
+    var phase := str(state.get("phase", "stars"))
+    var source_total := STAR_COUNT + NEBULA_COUNT
+
+    if phase == "bake":
+        var bake_index := int(state.get("bake_index", 0))
+        return 0.50 + 0.50 * (
+            float(bake_index) / float(maxi(1, source_total))
+        )
+
+    var stars := state.get("stars", []) as Array
+    var nebulae := state.get("nebulae", []) as Array
+    var source_done := stars.size() + nebulae.size()
+    return 0.50 * (
+        float(source_done) / float(maxi(1, source_total))
+    )
 
 
 func _generate_star_record() -> Array:
@@ -378,7 +455,6 @@ func _prepare_nebula_clouds() -> void:
         var angle := _randf() * TAU
         var cos_angle := cos(angle)
         var sin_angle := sin(angle)
-
         var rotated_tangent := tangent * cos_angle + bitangent * sin_angle
         var rotated_bitangent := -tangent * sin_angle + bitangent * cos_angle
 
@@ -449,46 +525,318 @@ func _generate_nebula_record(index: int) -> Array:
     ]
 
 
-func _complete_generation() -> void:
-    _generation_state["status"] = "complete"
-
+func _begin_bake_phase() -> bool:
     var job_id := str(_generation_state.get("job_id", "sky"))
-    var final_path := SKY_DIR + "/sky_%s.json" % job_id
-    var final_data := {
+    var folder := SKY_DIR + "/sky_" + job_id
+    DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(folder))
+
+    var source_path := folder + "/source.json"
+    var panorama_path := folder + "/panorama.png"
+    var work_path := folder + "/panorama_work.png"
+
+    var source_data := {
         "format": SKY_FORMAT,
-        "version": 1,
+        "version": 2,
         "id": job_id,
         "name": str(_generation_state.get("name", "Generated Sky")),
         "created_unix": int(_generation_state.get("created_unix", 0)),
         "seed": int(_generation_state.get("seed", 0)),
         "star_radius": STAR_RADIUS,
         "nebula_radius": NEBULA_RADIUS,
+        "panorama_width": PANORAMA_WIDTH,
+        "panorama_height": PANORAMA_HEIGHT,
         "stars": _generation_state.get("stars", []),
         "nebulae": _generation_state.get("nebulae", []),
     }
 
-    if not _write_json_atomic(final_path, final_data):
-        _fail_generation("Could not save the completed sky JSON.")
+    if not _write_json_atomic(source_path, source_data):
+        _fail_generation("Could not save the generated sky source JSON.")
+        return false
+
+    _bake_image = Image.create(
+        PANORAMA_WIDTH,
+        PANORAMA_HEIGHT,
+        false,
+        Image.FORMAT_RGB8
+    )
+    _bake_image.fill(Color.BLACK)
+
+    _generation_state["phase"] = "bake"
+    _generation_state["bake_index"] = 0
+    _generation_state["source_path"] = source_path
+    _generation_state["panorama_path"] = panorama_path
+    _generation_state["panorama_work_path"] = work_path
+
+    if not _save_bake_checkpoint():
+        _fail_generation("Could not create the panorama bake checkpoint.")
+        return false
+
+    return true
+
+
+func _process_bake() -> void:
+    if _bake_image == null:
+        _restore_bake_image()
+
+    if _bake_image == null:
+        _fail_generation("Could not restore the partial panorama.")
         return
 
-    _register_sky(final_path, final_data)
+    var stars := _generation_state.get("stars", []) as Array
+    var nebulae := _generation_state.get("nebulae", []) as Array
+    var total := stars.size() + nebulae.size()
+    var bake_index := int(_generation_state.get("bake_index", 0))
+    var remaining := BAKE_ITEMS_PER_FRAME
+
+    while remaining > 0 and bake_index < total:
+        if bake_index < stars.size():
+            _bake_record(stars[bake_index] as Array, false)
+        else:
+            _bake_record(
+                nebulae[bake_index - stars.size()] as Array,
+                true
+            )
+
+        bake_index += 1
+        remaining -= 1
+        _generation_state["bake_index"] = bake_index
+
+        if (
+            bake_index > 0
+            and bake_index % BAKE_IMAGE_CHECKPOINT_INTERVAL == 0
+        ):
+            if not _save_bake_checkpoint():
+                _fail_generation("Could not checkpoint the panorama bake.")
+                return
+
+    if bake_index >= total:
+        _complete_bake()
+
+
+func _restore_bake_image() -> void:
+    var work_path := str(_generation_state.get("panorama_work_path", ""))
+
+    if not work_path.is_empty() and FileAccess.file_exists(work_path):
+        var restored := Image.new()
+        if restored.load(work_path) == OK:
+            _bake_image = restored
+            return
+
+    # If a partial image was lost but the JSON checkpoint survived, restart
+    # only the bake phase. The generated sky source itself is preserved.
+    _bake_image = Image.create(
+        PANORAMA_WIDTH,
+        PANORAMA_HEIGHT,
+        false,
+        Image.FORMAT_RGB8
+    )
+    _bake_image.fill(Color.BLACK)
+    _generation_state["bake_index"] = 0
+
+
+func _bake_record(record: Array, is_nebula: bool) -> void:
+    if record.size() < 8 or _bake_image == null:
+        return
+
+    var direction := Vector3(
+        float(record[0]),
+        float(record[1]),
+        float(record[2])
+    )
+    if direction.length_squared() < 0.5:
+        return
+    direction = direction.normalized()
+
+    var world_size := float(record[3])
+    var source_radius := NEBULA_RADIUS if is_nebula else STAR_RADIUS
+    var angular_radius := atan(
+        (world_size * 0.5) / maxf(source_radius, 0.0001)
+    )
+    var radius_y := (
+        angular_radius / PI * float(PANORAMA_HEIGHT)
+    )
+
+    if is_nebula:
+        radius_y = maxf(radius_y, 2.0)
+    else:
+        # At 8192x4096 this is safely above one display pixel for the
+        # project's 60-degree / 720p reference camera while still reading as
+        # a point source after mipmapped panorama sampling.
+        radius_y = maxf(radius_y, MIN_STAR_PANORAMA_RADIUS)
+
+    var longitude := atan2(direction.z, direction.x)
+    var latitude := asin(clampf(direction.y, -1.0, 1.0))
+    var center_x := (
+        longitude / TAU + 0.5
+    ) * float(PANORAMA_WIDTH)
+    var center_y := (
+        0.5 - latitude / PI
+    ) * float(PANORAMA_HEIGHT)
+
+    var latitude_scale := maxf(absf(cos(latitude)), 0.035)
+    var radius_x := minf(
+        radius_y / latitude_scale,
+        320.0 if is_nebula else 80.0
+    )
+
+    var color := Color(
+        float(record[4]),
+        float(record[5]),
+        float(record[6]),
+        1.0
+    )
+    var alpha := float(record[7])
+
+    _splat_panorama(
+        center_x,
+        center_y,
+        radius_x,
+        radius_y,
+        color,
+        alpha,
+        is_nebula
+    )
+
+
+func _splat_panorama(
+    center_x: float,
+    center_y: float,
+    radius_x: float,
+    radius_y: float,
+    color: Color,
+    alpha: float,
+    is_nebula: bool
+) -> void:
+    var sigma_scale := 0.90 if is_nebula else 0.52
+    var sigma_x := maxf(radius_x * sigma_scale, 0.55)
+    var sigma_y := maxf(radius_y * sigma_scale, 0.55)
+    var extent_x := int(ceil(sigma_x * (2.6 if is_nebula else 2.3)))
+    var extent_y := int(ceil(sigma_y * (2.6 if is_nebula else 2.3)))
+
+    for offset_y in range(-extent_y, extent_y + 1):
+        var sample_y := int(round(center_y)) + offset_y
+        if sample_y < 0 or sample_y >= PANORAMA_HEIGHT:
+            continue
+
+        var normalized_y := float(offset_y) / sigma_y
+
+        for offset_x in range(-extent_x, extent_x + 1):
+            var normalized_x := float(offset_x) / sigma_x
+            var distance_sq := (
+                normalized_x * normalized_x
+                + normalized_y * normalized_y
+            )
+
+            if distance_sq > 7.0:
+                continue
+
+            var weight := exp(-0.5 * distance_sq)
+            var intensity := alpha * weight
+            if not is_nebula:
+                intensity *= 1.15
+
+            var sample_x := int(round(center_x)) + offset_x
+            sample_x = posmod(sample_x, PANORAMA_WIDTH)
+
+            var current := _bake_image.get_pixel(sample_x, sample_y)
+            _bake_image.set_pixel(
+                sample_x,
+                sample_y,
+                Color(
+                    clampf(current.r + color.r * intensity, 0.0, 1.0),
+                    clampf(current.g + color.g * intensity, 0.0, 1.0),
+                    clampf(current.b + color.b * intensity, 0.0, 1.0),
+                    1.0
+                )
+            )
+
+
+func _complete_bake() -> void:
+    var panorama_path := str(_generation_state.get("panorama_path", ""))
+    var source_path := str(_generation_state.get("source_path", ""))
+
+    if panorama_path.is_empty() or source_path.is_empty():
+        _fail_generation("Completed panorama paths were missing.")
+        return
+
+    if not _save_image_atomic(panorama_path):
+        _fail_generation("Could not save the completed panorama PNG.")
+        return
+
+    var work_path := str(_generation_state.get("panorama_work_path", ""))
+    if not work_path.is_empty() and FileAccess.file_exists(work_path):
+        DirAccess.remove_absolute(ProjectSettings.globalize_path(work_path))
+
+    var final_data := {
+        "id": str(_generation_state.get("job_id", "")),
+        "name": str(_generation_state.get("name", "Generated Sky")),
+        "created_unix": int(_generation_state.get("created_unix", 0)),
+        "source_path": source_path,
+        "panorama_path": panorama_path,
+        "stars": (_generation_state.get("stars", []) as Array).size(),
+        "nebulae": (_generation_state.get("nebulae", []) as Array).size(),
+        "panorama_width": PANORAMA_WIDTH,
+        "panorama_height": PANORAMA_HEIGHT,
+    }
+
+    _register_sky(final_data)
     _clear_checkpoints()
 
+    _generation_state["status"] = "complete"
     _generating = false
+    _bake_image = null
     set_process(false)
     _end_blocking()
-    generation_completed.emit(final_path)
+    generation_completed.emit(panorama_path)
 
 
 func _fail_generation(message: String) -> void:
     if not _generation_state.is_empty():
         _generation_state["status"] = "paused"
-        _save_checkpoint()
+
+        if str(_generation_state.get("phase", "")) == "bake":
+            _save_bake_checkpoint()
+        else:
+            _save_checkpoint()
 
     _generating = false
     set_process(false)
     _end_blocking()
     generation_failed.emit(message)
+
+
+func _save_bake_checkpoint() -> bool:
+    if _bake_image == null:
+        return false
+
+    var work_path := str(_generation_state.get("panorama_work_path", ""))
+    if work_path.is_empty():
+        return false
+
+    if not _save_image_atomic(work_path):
+        return false
+
+    return _save_checkpoint()
+
+
+func _save_image_atomic(path: String) -> bool:
+    if _bake_image == null:
+        return false
+
+    var temp_path := path.trim_suffix(".png") + ".tmp.png"
+    var error := _bake_image.save_png(temp_path)
+    if error != OK:
+        return false
+
+    var target_absolute := ProjectSettings.globalize_path(path)
+    var temp_absolute := ProjectSettings.globalize_path(temp_path)
+
+    if FileAccess.file_exists(path):
+        var remove_error := DirAccess.remove_absolute(target_absolute)
+        if remove_error != OK:
+            return false
+
+    return DirAccess.rename_absolute(temp_absolute, target_absolute) == OK
 
 
 func _save_checkpoint() -> bool:
@@ -538,43 +886,47 @@ func _clear_checkpoints() -> void:
             DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
-func _register_sky(path: String, data: Dictionary) -> void:
+func _register_sky(data: Dictionary) -> void:
     var index := _load_index()
     var skies := index.get("skies", []) as Array
     var sky_id := str(data.get("id", ""))
 
     for array_index in range(skies.size() - 1, -1, -1):
         var value = skies[array_index]
-        if value is Dictionary and str((value as Dictionary).get("id", "")) == sky_id:
+        if (
+            value is Dictionary
+            and str((value as Dictionary).get("id", "")) == sky_id
+        ):
             skies.remove_at(array_index)
 
-    skies.push_front({
-        "id": sky_id,
-        "name": str(data.get("name", "Generated Sky")),
-        "path": path,
-        "created_unix": int(data.get("created_unix", 0)),
-        "stars": (data.get("stars", []) as Array).size(),
-        "nebulae": (data.get("nebulae", []) as Array).size(),
-    })
-
+    skies.push_front(data)
     index["skies"] = skies
     index["active"] = sky_id
+
     _write_json_atomic(INDEX_PATH, index)
-    active_sky_changed.emit(path)
+    active_sky_changed.emit(str(data.get("panorama_path", "")))
 
 
 func _load_index() -> Dictionary:
     var index := _read_json(INDEX_PATH)
-    if str(index.get("format", "")) != INDEX_FORMAT:
+
+    if str(index.get("format", "")) not in [
+        INDEX_FORMAT,
+        "SPACE_FIELD_INDEX_V1",
+    ]:
         return {
             "format": INDEX_FORMAT,
-            "version": 1,
+            "version": 2,
             "active": "",
             "skies": [],
         }
 
+    index["format"] = INDEX_FORMAT
+    index["version"] = 2
+
     if not (index.get("skies", []) is Array):
         index["skies"] = []
+
     return index
 
 
@@ -627,6 +979,7 @@ func _random_unit_vector() -> Vector3:
     var y := _randf() * 2.0 - 1.0
     var angle := _randf() * TAU
     var horizontal := sqrt(maxf(0.0, 1.0 - y * y))
+
     return Vector3(
         horizontal * cos(angle),
         y,
@@ -655,6 +1008,7 @@ func _vector_to_array(value: Vector3) -> Array:
 func _array_to_vector(value) -> Vector3:
     if not (value is Array) or (value as Array).size() < 3:
         return Vector3.ZERO
+
     var array := value as Array
     return Vector3(
         float(array[0]),
@@ -665,6 +1019,7 @@ func _array_to_vector(value) -> Vector3:
 
 func _make_sky_name() -> String:
     var now := Time.get_datetime_dict_from_system()
+
     return "Sky %04d-%02d-%02d %02d-%02d-%02d" % [
         int(now.get("year", 0)),
         int(now.get("month", 0)),
@@ -676,14 +1031,14 @@ func _make_sky_name() -> String:
 
 
 func _format_number(value: int) -> String:
-    var text := str(value)
+    var number_text := str(value)
     var output := ""
     var digits := 0
 
-    for index in range(text.length() - 1, -1, -1):
+    for index in range(number_text.length() - 1, -1, -1):
         if digits > 0 and digits % 3 == 0:
             output = "," + output
-        output = text[index] + output
+        output = number_text[index] + output
         digits += 1
 
     return output
