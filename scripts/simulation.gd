@@ -72,6 +72,7 @@ var camera: Camera3D
 var asteroid_root: Node3D
 var effects_root: Node3D
 var planet: MeshInstance3D
+var distant_space: DistantSpace
 var asteroids: Dictionary = {}
 var mining_lasers: Array[Dictionary] = []
 var thruster_particles: Array[GPUParticles3D] = []
@@ -153,6 +154,7 @@ func _ready() -> void:
     _load_ship()
     launch_position = ship_body.global_position
     _build_camera()
+    _build_distant_space()
     asteroid_rng.randomize()
     _spawn_initial_asteroids()
     _build_ui()
@@ -169,25 +171,46 @@ func _build_environment() -> void:
     var world := WorldEnvironment.new()
     var environment := Environment.new()
 
-    var panorama_texture: Texture2D = load("res://assets/skybox/near_earth_space.webp")
-    if panorama_texture != null:
-        var sky_material := PanoramaSkyMaterial.new()
-        sky_material.panorama = panorama_texture
-
-        var sky := Sky.new()
-        sky.sky_material = sky_material
-        environment.sky = sky
-        environment.background_mode = Environment.BG_SKY
-    else:
-        environment.background_mode = Environment.BG_COLOR
-        environment.background_color = Color("#050914")
-
+    # The distant star/nebula field is real scene geometry, not a panorama.
+    # Keep the environment itself black so there is no skybox fallback,
+    # rotation, seam, or generated-image artifact behind the baked catalog.
+    environment.background_mode = Environment.BG_COLOR
+    environment.background_color = Color.BLACK
     environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
     environment.ambient_light_color = Color("#27344c")
     environment.ambient_light_energy = 0.16
     environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
     world.environment = environment
     add_child(world)
+
+
+func _build_distant_space() -> void:
+    distant_space = DistantSpace.new()
+    distant_space.name = "DistantSpace"
+    add_child(distant_space)
+
+    if not distant_space.build_from_catalog():
+        distant_space.queue_free()
+        distant_space = null
+        return
+
+    _update_distant_space()
+
+
+func _update_distant_space() -> void:
+    if (
+        distant_space == null
+        or not is_instance_valid(distant_space)
+        or camera == null
+        or not is_instance_valid(camera)
+    ):
+        return
+
+    # Translate the baked celestial shell with the camera so nearby flight
+    # never creates parallax. Its orientation remains fixed in world space,
+    # therefore camera rotation reveals different stars instead of rotating
+    # a texture around the player.
+    distant_space.global_position = camera.global_position
 
 
 func _build_planet() -> void:
@@ -1409,6 +1432,7 @@ func _physics_process(delta: float) -> void:
     _update_mining_lasers(delta)
     _sync_ship_collision_transforms()
     _update_camera(delta)
+    _update_distant_space()
 
 
 func _update_ship_motion(delta: float) -> void:
