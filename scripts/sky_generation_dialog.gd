@@ -201,5 +201,10 @@ func _on_generation_completed(path: String) -> void:
 
 func _on_generation_failed(message: String) -> void:
     _status_label.text = message
-    _action_button.text = "Close"
-    _close_button.visible = false
+
+    if SkyCatalog.has_checkpoint():
+        _action_button.text = "Resume"
+        _close_button.visible = true
+    else:
+        _action_button.text = "Close"
+        _close_button.visible = false
