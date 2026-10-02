@@ -168,8 +168,20 @@ func _ready() -> void:
 func _build_environment() -> void:
     var world := WorldEnvironment.new()
     var environment := Environment.new()
-    environment.background_mode = Environment.BG_COLOR
-    environment.background_color = Color("#050914")
+
+    var panorama_texture: Texture2D = load("res://assets/skybox/near_earth_space.webp")
+    if panorama_texture != null:
+        var sky_material := PanoramaSkyMaterial.new()
+        sky_material.panorama = panorama_texture
+
+        var sky := Sky.new()
+        sky.sky_material = sky_material
+        environment.sky = sky
+        environment.background_mode = Environment.BG_SKY
+    else:
+        environment.background_mode = Environment.BG_COLOR
+        environment.background_color = Color("#050914")
+
     environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
     environment.ambient_light_color = Color("#27344c")
     environment.ambient_light_energy = 0.16
