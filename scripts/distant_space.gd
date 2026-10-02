@@ -5,6 +5,111 @@ const DEFAULT_CATALOG_PATH := "res://assets/space/distant_space_catalog.csv"
 const EXPECTED_FORMAT := "SPACE_FIELD_V1"
 
 
+func build_active_or_default() -> bool:
+    var active_path := SkyCatalog.get_active_sky_path()
+    if not active_path.is_empty() and build_from_json(active_path):
+        return true
+    return build_from_catalog()
+
+
+func build_from_json(path: String) -> bool:
+    var file := FileAccess.open(path, FileAccess.READ)
+    if file == null:
+        push_error("Unable to open distant-space JSON: %s" % path)
+        return false
+
+    var parsed = JSON.parse_string(file.get_as_text())
+    file.close()
+
+    if not (parsed is Dictionary):
+        push_error("Invalid distant-space JSON: %s" % path)
+        return false
+
+    var data := parsed as Dictionary
+    if str(data.get("format", "")) != EXPECTED_FORMAT:
+        push_error("Unsupported distant-space JSON format: %s" % path)
+        return false
+
+    var star_records = data.get("stars", [])
+    var nebula_records = data.get("nebulae", [])
+    if not (star_records is Array) or not (nebula_records is Array):
+        push_error("Distant-space JSON is missing record arrays: %s" % path)
+        return false
+
+    var stars_data := star_records as Array
+    var nebula_data := nebula_records as Array
+    var star_radius := float(data.get("star_radius", 6200.0))
+    var nebula_radius := float(data.get("nebula_radius", 5900.0))
+
+    var stars := _create_layer(
+        "DistantStars",
+        stars_data.size(),
+        _create_star_material(),
+        maxf(star_radius, nebula_radius)
+    )
+    var nebulae := _create_layer(
+        "DistantNebulae",
+        nebula_data.size(),
+        _create_nebula_material(),
+        maxf(star_radius, nebula_radius)
+    )
+
+    add_child(nebulae)
+    add_child(stars)
+
+    var star_index := 0
+    for value in stars_data:
+        if _apply_json_record(stars, star_index, value, star_radius):
+            star_index += 1
+
+    var nebula_index := 0
+    for value in nebula_data:
+        if _apply_json_record(nebulae, nebula_index, value, nebula_radius):
+            nebula_index += 1
+
+    stars.multimesh.visible_instance_count = star_index
+    nebulae.multimesh.visible_instance_count = nebula_index
+    return star_index > 0
+
+
+func _apply_json_record(
+    layer: MultiMeshInstance3D,
+    index: int,
+    value,
+    radius: float
+) -> bool:
+    if not (value is Array):
+        return false
+
+    var record := value as Array
+    if record.size() < 8:
+        return false
+
+    var direction := Vector3(
+        float(record[0]),
+        float(record[1]),
+        float(record[2])
+    )
+    if direction.length_squared() < 0.5:
+        return false
+    direction = direction.normalized()
+
+    var size := float(record[3])
+    var tint := Color(
+        float(record[4]),
+        float(record[5]),
+        float(record[6]),
+        float(record[7])
+    )
+
+    layer.multimesh.set_instance_transform(
+        index,
+        _tangent_transform(direction, radius, size)
+    )
+    layer.multimesh.set_instance_custom_data(index, tint)
+    return true
+
+
 func build_from_catalog(path: String = DEFAULT_CATALOG_PATH) -> bool:
     var file := FileAccess.open(path, FileAccess.READ)
     if file == null:
