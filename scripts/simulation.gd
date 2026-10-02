@@ -1157,7 +1157,7 @@ func _show_flight_debug_menu() -> void:
 
     var sky_selector := OptionButton.new()
     sky_selector.custom_minimum_size = Vector2(0.0, 48.0)
-    sky_selector.add_item("Built-in Sky")
+    sky_selector.add_item("Black Background")
     sky_selector.set_item_metadata(0, "")
 
     var active_id := SkyCatalog.get_active_sky_id()
@@ -1179,7 +1179,7 @@ func _show_flight_debug_menu() -> void:
     menu_content.add_child(sky_selector)
 
     var note := Label.new()
-    note.text = "Hitboxes show exact physics collision shapes. Laser range shows the 40-cell activation boundary measured from each laser's 1x1x1 builder cell. Sky generation pauses flight and checkpoints to JSON for crash-safe resume."
+    note.text = "Hitboxes show exact physics collision shapes. Laser range shows the 40-cell activation boundary measured from each laser's 1x1x1 builder cell. Sky generation pauses flight, checkpoints source/bake state, and produces a static panorama PNG."
     note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     note.modulate.a = 0.76
     menu_content.add_child(note)
