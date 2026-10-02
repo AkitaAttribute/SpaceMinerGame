@@ -68,11 +68,11 @@ var ship_visual_root: Node3D
 var ship_collision_shapes: Array[CollisionShape3D] = []
 var ship_collision_bindings: Array[Dictionary] = []
 var camera: Camera3D
+var world_environment: WorldEnvironment
 
 var asteroid_root: Node3D
 var effects_root: Node3D
 var planet: MeshInstance3D
-var distant_space: DistantSpace
 var asteroids: Dictionary = {}
 var mining_lasers: Array[Dictionary] = []
 var thruster_particles: Array[GPUParticles3D] = []
@@ -155,7 +155,6 @@ func _ready() -> void:
     _load_ship()
     launch_position = ship_body.global_position
     _build_camera()
-    _build_distant_space()
     asteroid_rng.randomize()
     _spawn_initial_asteroids()
     _build_ui()
@@ -169,60 +168,62 @@ func _ready() -> void:
 
 
 func _build_environment() -> void:
-    var world := WorldEnvironment.new()
-    var environment := Environment.new()
+    world_environment = WorldEnvironment.new()
+    world_environment.name = "WorldEnvironment"
 
-    # The distant star/nebula field is real scene geometry, not a panorama.
-    # Keep the environment itself black so there is no skybox fallback,
-    # rotation, seam, or generated-image artifact behind the baked catalog.
-    environment.background_mode = Environment.BG_COLOR
-    environment.background_color = Color.BLACK
+    var environment := Environment.new()
+    _apply_active_panorama(environment)
+
     environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
     environment.ambient_light_color = Color("#27344c")
     environment.ambient_light_energy = 0.16
     environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-    world.environment = environment
-    add_child(world)
+
+    world_environment.environment = environment
+    add_child(world_environment)
 
 
-func _build_distant_space() -> void:
-    distant_space = DistantSpace.new()
-    distant_space.name = "DistantSpace"
-    add_child(distant_space)
+func _apply_active_panorama(environment: Environment) -> void:
+    var panorama_path := SkyCatalog.get_active_panorama_path()
 
-    if not distant_space.build_active_or_default():
-        distant_space.queue_free()
-        distant_space = null
+    if panorama_path.is_empty():
+        environment.sky = null
+        environment.background_mode = Environment.BG_COLOR
+        environment.background_color = Color.BLACK
         return
 
-    _update_distant_space()
+    var image := Image.new()
+    if image.load(panorama_path) != OK:
+        environment.sky = null
+        environment.background_mode = Environment.BG_COLOR
+        environment.background_color = Color.BLACK
+        push_warning("Unable to load generated panorama: %s" % panorama_path)
+        return
 
+    # The baked sky is static. Mipmaps let the panorama sampler average
+    # sub-screen texels instead of causing high-frequency star shimmer while
+    # the camera rotates.
+    if not image.has_mipmaps():
+        image.generate_mipmaps()
 
-func _reload_distant_space() -> void:
-    if distant_space != null and is_instance_valid(distant_space):
-        distant_space.queue_free()
-        distant_space = null
-    _build_distant_space()
+    var texture := ImageTexture.create_from_image(image)
+    var sky_material := PanoramaSkyMaterial.new()
+    sky_material.panorama = texture
+
+    var sky := Sky.new()
+    sky.sky_material = sky_material
+
+    environment.sky = sky
+    environment.background_mode = Environment.BG_SKY
 
 
 func _on_active_sky_changed(_path: String) -> void:
-    _reload_distant_space()
-
-
-func _update_distant_space() -> void:
-    if (
-        distant_space == null
-        or not is_instance_valid(distant_space)
-        or camera == null
-        or not is_instance_valid(camera)
-    ):
+    if world_environment == null or not is_instance_valid(world_environment):
+        return
+    if world_environment.environment == null:
         return
 
-    # Translate the baked celestial shell with the camera so nearby flight
-    # never creates parallax. Its orientation remains fixed in world space,
-    # therefore camera rotation reveals different stars instead of rotating
-    # a texture around the player.
-    distant_space.global_position = camera.global_position
+    _apply_active_panorama(world_environment.environment)
 
 
 func _build_planet() -> void:
@@ -1531,7 +1532,6 @@ func _physics_process(delta: float) -> void:
     _update_mining_lasers(delta)
     _sync_ship_collision_transforms()
     _update_camera(delta)
-    _update_distant_space()
 
 
 func _update_ship_motion(delta: float) -> void:
