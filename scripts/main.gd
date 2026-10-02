@@ -1735,7 +1735,7 @@ func _show_debug_menu() -> void:
 
     var sky_selector := OptionButton.new()
     sky_selector.custom_minimum_size = Vector2(0.0, 48.0)
-    sky_selector.add_item("Built-in Sky")
+    sky_selector.add_item("Black Background")
     sky_selector.set_item_metadata(0, "")
 
     var active_id := SkyCatalog.get_active_sky_id()
@@ -1760,8 +1760,8 @@ func _show_debug_menu() -> void:
 
     var note := Label.new()
     note.text = (
-        "%d generated sky file(s). Completed skies and resumable checkpoints "
-        + "are stored as JSON under user://skyboxes."
+        "%d baked panorama sky(s). Source JSON, panorama PNGs, and resumable "
+        + "checkpoints are stored under user://skyboxes."
     ) % skies.size()
     note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     note.modulate.a = 0.70
