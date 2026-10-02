@@ -106,7 +106,7 @@ func _build_ui() -> void:
     content.add_child(title)
 
     var subtitle := Label.new()
-    subtitle.text = "Building a static distant-star and nebula catalog"
+    subtitle.text = "Generating source data, then baking an 8192 x 4096 static panorama"
     subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     subtitle.modulate.a = 0.76
     content.add_child(subtitle)
@@ -134,7 +134,7 @@ func _build_ui() -> void:
     content.add_child(_status_label)
 
     var checkpoint_note := Label.new()
-    checkpoint_note.text = "Progress is checkpointed to JSON. If the game closes or crashes, the job can be resumed from Debug."
+    checkpoint_note.text = "Source generation and panorama baking are checkpointed. A crash or closure can resume from the latest saved JSON/partial PNG state."
     checkpoint_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     checkpoint_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     checkpoint_note.modulate.a = 0.70
@@ -194,7 +194,7 @@ func _on_generation_paused() -> void:
 func _on_generation_completed(path: String) -> void:
     _wheel.set_progress(1.0)
     _percent_label.text = "100%"
-    _status_label.text = "Complete. The new sky is saved as JSON and is now the active sky.\n%s" % path
+    _status_label.text = "Complete. The source JSON and static panorama PNG are saved, and the panorama is now active.\n%s" % path
     _action_button.text = "Close"
     _close_button.visible = false
 
