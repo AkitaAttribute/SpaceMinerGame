@@ -94,16 +94,18 @@ jobs:
           fi
           test -s build/SpaceMinerGame.exe
           cp tools/SpaceMinerWindowsDiagnostics.ps1 build/SpaceMinerWindowsDiagnostics.ps1
+          cp tools/SpaceMinerWindowsDeepDiagnostics.ps1 build/SpaceMinerWindowsDeepDiagnostics.ps1
           test -s build/SpaceMinerWindowsDiagnostics.ps1
-          ls -lh build/SpaceMinerGame.exe build/SpaceMinerWindowsDiagnostics.ps1
+          test -s build/SpaceMinerWindowsDeepDiagnostics.ps1
+          test -s build/libEGL.dll
+          test -s build/libGLESv2.dll
+          ls -lh build/
 
       - name: Upload Windows executable and diagnostics
         uses: actions/upload-artifact@v4
         with:
           name: SpaceMinerGame-Windows-${{ github.sha }}
-          path: |
-            build/SpaceMinerGame.exe
-            build/SpaceMinerWindowsDiagnostics.ps1
+          path: build/*
           if-no-files-found: error
           retention-days: 14
 
@@ -129,7 +131,7 @@ jobs:
           mkdir -p build
           godot --headless --path . --export-debug "Android" build/SpaceMinerGame-Android.apk 2>&1 | tee /tmp/godot-android-export.log
           if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Shader compilation failed|Failed to compile shader" /tmp/godot-android-export.log; then
-            echo "Godot reported script or shader errors during Android export."
+            echo "Godot reported errors during Android export."
             exit 1
           fi
           test -s build/SpaceMinerGame-Android.apk
