@@ -9,6 +9,7 @@ run/flush_stdout_on_print=true
 
 [autoload]
 AppLogger="*res://scripts/app_logger.gd"
+ThreadHeartbeat="*res://scripts/thread_heartbeat.gd"
 PerformanceProbe="*res://scripts/performance_probe.gd"
 AppSettings="*res://scripts/app_settings.gd"
 SkyCatalog="*res://scripts/sky_catalog.gd"
