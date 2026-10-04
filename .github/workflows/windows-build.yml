@@ -95,8 +95,10 @@ jobs:
           test -s build/SpaceMinerGame.exe
           cp tools/SpaceMinerWindowsDiagnostics.ps1 build/SpaceMinerWindowsDiagnostics.ps1
           cp tools/SpaceMinerWindowsDeepDiagnostics.ps1 build/SpaceMinerWindowsDeepDiagnostics.ps1
+          cp tools/SpaceMinerRunDriverTest.ps1 build/SpaceMinerRunDriverTest.ps1
           test -s build/SpaceMinerWindowsDiagnostics.ps1
           test -s build/SpaceMinerWindowsDeepDiagnostics.ps1
+          test -s build/SpaceMinerRunDriverTest.ps1
           test -s build/libEGL.dll
           test -s build/libGLESv2.dll
           ls -lh build/
