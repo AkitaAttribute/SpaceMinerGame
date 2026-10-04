@@ -32,7 +32,12 @@ function New-CounterSafe {
     )
 
     try {
-        $pc = New-Object System.Diagnostics.PerformanceCounter($Category, $Counter, $Instance, $true)
+        $pc = [System.Diagnostics.PerformanceCounter]::new(
+            $Category,
+            $Counter,
+            $Instance,
+            $true
+        )
         [void]$pc.NextValue()
         return $pc
     }
@@ -60,14 +65,14 @@ function Get-GpuCountersForProcess {
 
     $result = New-Object 'System.Collections.Generic.List[object]'
     try {
-        $category = New-Object System.Diagnostics.PerformanceCounterCategory("GPU Engine")
+        $category = [System.Diagnostics.PerformanceCounterCategory]::new("GPU Engine")
         $prefix = "pid_{0}_" -f $GameProcessId
         foreach ($instance in $category.GetInstanceNames()) {
             if (-not $instance.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
                 continue
             }
             try {
-                $counter = New-Object System.Diagnostics.PerformanceCounter(
+                $counter = [System.Diagnostics.PerformanceCounter]::new(
                     "GPU Engine",
                     "Utilization Percentage",
                     $instance,
