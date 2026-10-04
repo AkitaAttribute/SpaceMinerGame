@@ -5,6 +5,17 @@ const SEVERE_HITCH_THRESHOLD_MS := 50.0
 const PERIODIC_SNAPSHOT_SECONDS := 10.0
 const INPUT_RATE_WINDOW_SECONDS := 1.0
 
+# Desktop-only controlled VSync A/B test. Give the game a short startup window,
+# then alternate five three-minute blocks:
+#   ON -> OFF -> ON -> OFF -> ON
+# VSync-off blocks are capped at 60 FPS so the comparison does not turn into
+# an uncapped-GPU-load test on fast desktop hardware.
+const AB_START_DELAY_SECONDS := 30.0
+const AB_PHASE_SECONDS := 180.0
+const AB_PHASE_COUNT := 5
+const AB_PHASE_WARMUP_SECONDS := 5.0
+const AB_VSYNC_OFF_MAX_FPS := 60
+
 var _enabled := false
 var _viewport_rid := RID()
 var _records: Array[String] = []
@@ -17,6 +28,17 @@ var _mouse_motion_per_second := 0
 var _hitch_count := 0
 var _severe_hitch_count := 0
 var _start_ticks_usec := 0
+
+var _ab_started := false
+var _ab_complete := false
+var _ab_delay_elapsed := 0.0
+var _ab_phase_index := -1
+var _ab_phase_elapsed := 0.0
+var _ab_phase_hitches := 0
+var _ab_phase_severe := 0
+var _ab_results: Array[String] = []
+var _initial_vsync_mode: DisplayServer.VSyncMode
+var _initial_max_fps := 0
 
 
 func _ready() -> void:
@@ -34,10 +56,19 @@ func _ready() -> void:
         return
 
     _start_ticks_usec = Time.get_ticks_usec()
+    _initial_vsync_mode = DisplayServer.window_get_vsync_mode()
+    _initial_max_fps = Engine.max_fps
+
     call_deferred("_enable_render_measurement")
     _records.append(_header_text())
     _records.append(
-        "Passive probe enabled. No file I/O occurs until F9 or normal exit."
+        "Passive probe enabled. F9 or normal exit writes the current log."
+    )
+    _records.append(
+        "VSYNC_AB scheduled: %.0fs startup delay, then %d x %.0fs phases "
+        % [AB_START_DELAY_SECONDS, AB_PHASE_COUNT, AB_PHASE_SECONDS]
+        + "(ON/OFF/ON/OFF/ON). OFF phases use Engine.max_fps=%d."
+        % AB_VSYNC_OFF_MAX_FPS
     )
 
 
@@ -57,6 +88,19 @@ func _process(delta: float) -> void:
     if not _enabled:
         return
 
+    if not _ab_started and not _ab_complete:
+        _ab_delay_elapsed += delta
+        if _ab_delay_elapsed >= AB_START_DELAY_SECONDS:
+            _start_ab_phase(0)
+
+    if _ab_started and not _ab_complete:
+        _ab_phase_elapsed += delta
+        if _ab_phase_elapsed >= AB_PHASE_SECONDS:
+            _finish_ab_phase()
+
+    if _ab_complete:
+        return
+
     _input_elapsed += delta
     _periodic_elapsed += delta
 
@@ -74,8 +118,18 @@ func _process(delta: float) -> void:
     var frame_ms := delta * 1000.0
     if frame_ms >= HITCH_THRESHOLD_MS:
         _hitch_count += 1
-        if frame_ms >= SEVERE_HITCH_THRESHOLD_MS:
+        var severe := frame_ms >= SEVERE_HITCH_THRESHOLD_MS
+        if severe:
             _severe_hitch_count += 1
+
+        if (
+            _ab_started
+            and _ab_phase_elapsed >= AB_PHASE_WARMUP_SECONDS
+        ):
+            _ab_phase_hitches += 1
+            if severe:
+                _ab_phase_severe += 1
+
         _records.append(_snapshot_text("HITCH", frame_ms))
 
     if _periodic_elapsed >= PERIODIC_SNAPSHOT_SECONDS:
@@ -102,6 +156,95 @@ func _input(event: InputEvent) -> void:
                 _snapshot_text("MANUAL_DUMP", 0.0)
             )
             _write_log()
+
+
+func _start_ab_phase(index: int) -> void:
+    _ab_started = true
+    _ab_phase_index = index
+    _ab_phase_elapsed = 0.0
+    _ab_phase_hitches = 0
+    _ab_phase_severe = 0
+
+    var enable_vsync := index % 2 == 0
+    if enable_vsync:
+        DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
+        Engine.max_fps = _initial_max_fps
+    else:
+        DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+        Engine.max_fps = AB_VSYNC_OFF_MAX_FPS
+
+    _records.append(
+        "[%s] VSYNC_AB_PHASE_START phase=%d/%d mode=%s max_fps=%d "
+        % [
+            Time.get_datetime_string_from_system(),
+            index + 1,
+            AB_PHASE_COUNT,
+            "ON" if enable_vsync else "OFF",
+            Engine.max_fps,
+        ]
+        + "warmup_excluded=%.0fs"
+        % AB_PHASE_WARMUP_SECONDS
+    )
+
+
+func _finish_ab_phase() -> void:
+    var enable_vsync := _ab_phase_index % 2 == 0
+    var result := (
+        "VSYNC_AB_RESULT phase=%d/%d mode=%s duration=%.1fs "
+        + "hitches_after_warmup=%d severe_after_warmup=%d"
+    ) % [
+        _ab_phase_index + 1,
+        AB_PHASE_COUNT,
+        "ON" if enable_vsync else "OFF",
+        _ab_phase_elapsed,
+        _ab_phase_hitches,
+        _ab_phase_severe,
+    ]
+    _ab_results.append(result)
+    _records.append("[%s] %s" % [
+        Time.get_datetime_string_from_system(),
+        result,
+    ])
+
+    var next_phase := _ab_phase_index + 1
+    if next_phase < AB_PHASE_COUNT:
+        _start_ab_phase(next_phase)
+        return
+
+    _complete_ab_test()
+
+
+func _complete_ab_test() -> void:
+    _ab_complete = true
+    _ab_started = false
+
+    DisplayServer.window_set_vsync_mode(_initial_vsync_mode)
+    Engine.max_fps = _initial_max_fps
+
+    _records.append(
+        "[%s] VSYNC_AB_COMPLETE restored_vsync=%s restored_max_fps=%d"
+        % [
+            Time.get_datetime_string_from_system(),
+            _vsync_name(_initial_vsync_mode),
+            _initial_max_fps,
+        ]
+    )
+    _records.append("VSYNC_AB_SUMMARY_BEGIN")
+    for result in _ab_results:
+        _records.append(result)
+    _records.append("VSYNC_AB_SUMMARY_END")
+
+    # The user can simply leave the build running. The completed 15-minute
+    # result is written automatically without requiring F9 or an app exit.
+    _write_log()
+
+
+func _current_phase_name() -> String:
+    if _ab_complete:
+        return "complete"
+    if not _ab_started:
+        return "startup_delay"
+    return "vsync_on" if _ab_phase_index % 2 == 0 else "vsync_off"
 
 
 func _snapshot_text(kind: String, frame_ms: float) -> String:
@@ -153,19 +296,22 @@ func _snapshot_text(kind: String, frame_ms: float) -> String:
     ) / 1000000.0
 
     return (
-        "[%s] %s t=%.3fs frame=%.2fms fps=%.1f "
+        "[%s] %s t=%.3fs phase=%s phase_t=%.2fs "
+        + "frame=%.2fms fps=%.1f "
         + "render_cpu=%.2fms render_gpu=%.2fms setup_cpu=%.2fms "
         + "engine_process=%.2fms engine_physics=%.2fms "
         + "draws=%d primitives=%d objects=%d "
         + "textures=%.1fMB buffers=%.1fMB "
         + "input_rate=%d/s mouse_motion=%d/s "
         + "input_current=%d mouse_current=%d "
-        + "vsync=%s refresh=%.2fHz window=%dx%d focused=%s "
-        + "hitches=%d severe=%d"
+        + "vsync=%s max_fps=%d refresh=%.2fHz "
+        + "window=%dx%d focused=%s hitches=%d severe=%d"
     ) % [
         Time.get_datetime_string_from_system(),
         kind,
         elapsed_seconds,
+        _current_phase_name(),
+        _ab_phase_elapsed,
         frame_ms,
         Engine.get_frames_per_second(),
         render_cpu_ms,
@@ -183,6 +329,7 @@ func _snapshot_text(kind: String, frame_ms: float) -> String:
         _input_events_current,
         _mouse_motion_current,
         vsync,
+        Engine.max_fps,
         refresh,
         window_size.x,
         window_size.y,
@@ -207,11 +354,13 @@ func _header_text() -> String:
         % RenderingServer.get_video_adapter_name()
         + "Video API: %s\n"
         % RenderingServer.get_video_adapter_api_version()
-        + "VSync: %s\n"
+        + "Initial VSync: %s\n"
         % _vsync_name(DisplayServer.window_get_vsync_mode())
+        + "Initial max FPS: %d\n" % Engine.max_fps
         + "Refresh: %.2f Hz\n"
         % DisplayServer.screen_get_refresh_rate()
-        + "F9 writes the current in-memory probe log."
+        + "F9 writes the current in-memory probe log.\n"
+        + "The VSync A/B test writes automatically when complete."
     )
 
 
@@ -270,6 +419,19 @@ func _exit_tree() -> void:
         RenderingServer.viewport_set_measure_render_time(
             _viewport_rid,
             false
+        )
+
+    if not _ab_complete:
+        DisplayServer.window_set_vsync_mode(_initial_vsync_mode)
+        Engine.max_fps = _initial_max_fps
+        _records.append(
+            "[%s] VSYNC_AB_ABORTED phase=%s restored_vsync=%s restored_max_fps=%d"
+            % [
+                Time.get_datetime_string_from_system(),
+                _current_phase_name(),
+                _vsync_name(_initial_vsync_mode),
+                _initial_max_fps,
+            ]
         )
 
     _records.append(_snapshot_text("EXIT", 0.0))
