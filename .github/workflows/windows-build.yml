@@ -93,17 +93,9 @@ jobs:
             exit 1
           fi
           test -s build/SpaceMinerGame.exe
-          cp tools/SpaceMinerWindowsDiagnostics.ps1 build/SpaceMinerWindowsDiagnostics.ps1
-          cp tools/SpaceMinerWindowsDeepDiagnostics.ps1 build/SpaceMinerWindowsDeepDiagnostics.ps1
-          cp tools/SpaceMinerRunDriverTest.ps1 build/SpaceMinerRunDriverTest.ps1
-          test -s build/SpaceMinerWindowsDiagnostics.ps1
-          test -s build/SpaceMinerWindowsDeepDiagnostics.ps1
-          test -s build/SpaceMinerRunDriverTest.ps1
-          test -s build/libEGL.dll
-          test -s build/libGLESv2.dll
           ls -lh build/
 
-      - name: Upload Windows executable and diagnostics
+      - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
           name: SpaceMinerGame-Windows-${{ github.sha }}
@@ -119,7 +111,15 @@ jobs:
           test -x "$JAVA_HOME/bin/keytool"
           mkdir -p "$HOME/.android"
           if [[ ! -f "$HOME/.android/debug.keystore" ]]; then
-            "$JAVA_HOME/bin/keytool" -genkeypair -v               -keystore "$HOME/.android/debug.keystore"               -storepass android               -alias androiddebugkey               -keypass android               -keyalg RSA               -keysize 2048               -validity 10000               -dname "CN=Android Debug,O=Android,C=US"
+            "$JAVA_HOME/bin/keytool" -genkeypair -v \
+              -keystore "$HOME/.android/debug.keystore" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
           fi
 
       - name: Export Android debug APK
