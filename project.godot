@@ -30,8 +30,8 @@ window/handheld/orientation=4
 [rendering]
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
-rendering/gl_compatibility/driver.windows="opengl3_angle"
-rendering/gl_compatibility/fallback_to_native=false
+gl_compatibility/driver.windows="opengl3_angle"
+gl_compatibility/fallback_to_native=false
 textures/vram_compression/import_etc2_astc=true
 environment/defaults/default_clear_color=Color(0.035, 0.045, 0.065, 1)
 
