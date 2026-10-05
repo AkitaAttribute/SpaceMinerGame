@@ -6,12 +6,12 @@ config_version=5
 config/name="Space Miner"
 run/main_scene="res://main.tscn"
 run/flush_stdout_on_print=true
+run/max_fps=165
 
 [autoload]
 AppLogger="*res://scripts/app_logger.gd"
 ThreadHeartbeat="*res://scripts/thread_heartbeat.gd"
 FrameStageProbe="*res://scripts/frame_stage_probe.gd"
-PerformanceProbe="*res://scripts/performance_probe.gd"
 AppSettings="*res://scripts/app_settings.gd"
 SkyCatalog="*res://scripts/sky_catalog.gd"
 ShipStore="*res://scripts/ship_store.gd"
@@ -26,6 +26,7 @@ window/size/window_width_override=1280
 window/size/window_height_override=720
 window/stretch/mode="canvas_items"
 window/handheld/orientation=4
+window/vsync/vsync_mode=0
 
 [rendering]
 renderer/rendering_method="gl_compatibility"
