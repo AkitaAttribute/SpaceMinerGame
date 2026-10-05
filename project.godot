@@ -12,6 +12,7 @@ run/max_fps=0
 AppLogger="*res://scripts/app_logger.gd"
 ThreadHeartbeat="*res://scripts/thread_heartbeat.gd"
 FrameStageProbe="*res://scripts/frame_stage_probe.gd"
+FramePacer="*res://scripts/frame_pacer.gd"
 AppSettings="*res://scripts/app_settings.gd"
 SkyCatalog="*res://scripts/sky_catalog.gd"
 ShipStore="*res://scripts/ship_store.gd"
