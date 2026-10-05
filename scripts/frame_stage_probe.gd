@@ -1,6 +1,6 @@
 extends Node
 
-const HITCH_THRESHOLD_MS := 25.0
+const HITCH_THRESHOLD_MS := 10.0
 
 var _enabled := false
 var _records: Array[String] = []
@@ -40,6 +40,9 @@ func _ready() -> void:
         + "Rendering driver: %s\n"
         % RenderingServer.get_current_rendering_driver_name()
         + "Process ID: %d\n" % OS.get_process_id()
+        + "VSync: %s\n" % _vsync_name(DisplayServer.window_get_vsync_mode())
+        + "Max FPS: %d\n" % Engine.max_fps
+        + "Hitch threshold: %.1f ms\n" % HITCH_THRESHOLD_MS
         + "No disk writes occur until normal application shutdown."
     )
 
@@ -99,7 +102,7 @@ func _snapshot(kind: String, frame_ms: float, now_usec: int) -> String:
     return (
         "[%s] %s t=%.3fs frame=%.2fms process_interval=%.2fms "
         + "process_to_pre=%.2fms pre_to_post=%.2fms "
-        + "post_to_process=%.2fms driver=%s vsync=%s fps=%.1f "
+        + "post_to_process=%.2fms driver=%s vsync=%s max_fps=%d fps=%.1f "
         + "focused=%s hitches=%d"
     ) % [
         Time.get_datetime_string_from_system(),
@@ -112,6 +115,7 @@ func _snapshot(kind: String, frame_ms: float, now_usec: int) -> String:
         _post_to_process_ms,
         RenderingServer.get_current_rendering_driver_name(),
         _vsync_name(DisplayServer.window_get_vsync_mode()),
+        Engine.max_fps,
         Engine.get_frames_per_second(),
         str(DisplayServer.window_is_focused()),
         _hitch_count,
@@ -155,7 +159,9 @@ func _write_log() -> void:
 
     for record in _records:
         file.store_line(record)
-    file.store_line("Summary: hitches >=25ms=%d" % _hitch_count)
+    file.store_line(
+        "Summary: hitches >=%.1fms=%d" % [HITCH_THRESHOLD_MS, _hitch_count]
+    )
     file.close()
 
 
