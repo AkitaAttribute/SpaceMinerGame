@@ -4,15 +4,12 @@ extends Node
 #
 # The gameplay simulation continues to own targeting, mining progress, turret
 # rotation, and the original beam nodes at the 60 Hz physics rate. This node
-# never reads MultiMesh buffers back from RenderingServer. Instead, after each
-# physics tick it derives the visible beam endpoints from gameplay state,
-# builds current/previous transform buffers in CPU memory, and uploads both in
-# one direction with multimesh_set_buffer_interpolated().
+# snapshots that completed physics state and renders a presentation-only beam.
 #
-# The original simulation beam is hidden only after its visibility decision has
-# been sampled. A separate fixed-size presentation MultiMesh is rendered. This
-# avoids both per-tick instance-count reallocations in the visible beam and GPU
-# readbacks that can synchronize/stall the main thread.
+# IMPORTANT: when a beam becomes hidden/obstructed/out-of-range, all cached
+# endpoint/interpolation state is discarded. A later visible beam always starts
+# from its current muzzle/end position; no pre-obstruction beam position is
+# allowed to participate in the next draw.
 
 const MAX_BEAM_INSTANCES := 80
 const PARTICLES_PER_UNIT := 6.5
@@ -20,8 +17,10 @@ const LASER_BARREL_LENGTH := 0.42
 const LASER_MINING_SECONDS := 5.0
 const LASER_SURFACE_TRANSITION_SECONDS := 1.50
 const DISCONTINUITY_DISTANCE := 2.0
+const SMOOTH_POSITION_WARN_DISTANCE := 0.75
 const STATS_INTERVAL_USEC := 5_000_000
 const TRANSFORM_STRIDE := 12
+const TRACE_FILE_NAME := "SpaceMinerLaserTrace.log"
 
 var _enabled := false
 var _scene_id := 0
@@ -30,6 +29,10 @@ var _stats_start_usec := 0
 var _stats_sync_usec := 0
 var _stats_ticks := 0
 var _stats_resets := 0
+var _trace_records: Array[String] = []
+var _trace_start_usec := 0
+var _trace_tick := 0
+var _trace_errors := 0
 
 
 func _ready() -> void:
@@ -47,6 +50,14 @@ func _ready() -> void:
         return
 
     _stats_start_usec = Time.get_ticks_usec()
+    _trace_start_usec = _stats_start_usec
+    _trace_records.append(
+        "SpaceMiner mining-laser presentation trace\n"
+        + "Started: %s\n" % Time.get_datetime_string_from_system()
+        + "Engine: %s\n" % str(Engine.get_version_info().get("string", "unknown"))
+        + "Smooth-position warning distance: %.3f units/tick\n" % SMOOTH_POSITION_WARN_DISTANCE
+        + "All trace data is buffered in memory until normal shutdown."
+    )
 
 
 func _physics_process(_delta: float) -> void:
@@ -54,6 +65,7 @@ func _physics_process(_delta: float) -> void:
         _restore_original_beams()
         return
 
+    _trace_tick += 1
     var started := Time.get_ticks_usec()
     var scene := get_tree().current_scene
     if scene == null:
@@ -62,6 +74,7 @@ func _physics_process(_delta: float) -> void:
 
     var current_scene_id := scene.get_instance_id()
     if current_scene_id != _scene_id:
+        _trace_records.append(_trace_prefix() + " SCENE_CHANGE old=%d new=%d" % [_scene_id, current_scene_id])
         _clear_states()
         _scene_id = current_scene_id
 
@@ -74,7 +87,8 @@ func _physics_process(_delta: float) -> void:
     var seen: Dictionary = {}
     var lasers := lasers_value as Array
 
-    for laser_value in lasers:
+    for laser_index in range(lasers.size()):
+        var laser_value = lasers[laser_index]
         if not (laser_value is Dictionary):
             continue
         var laser := laser_value as Dictionary
@@ -101,13 +115,26 @@ func _physics_process(_delta: float) -> void:
         if state.is_empty():
             continue
 
-        # Capture the simulation's decision before hiding its beam from the
-        # manual renderer. The simulation writes this value every active tick.
+        # Capture the simulation's final visibility decision for this physics
+        # tick before hiding the original beam from the manual renderer.
         var source_visible := source.visible
         source.visible = false
 
         var endpoint_data := _laser_endpoints(laser, pivot)
+        var signature := _laser_signature(laser)
+        var pivot_position := pivot.global_position
+        var turret_tip := _laser_tip_world(pivot)
+
         if not source_visible or endpoint_data.is_empty():
+            var hide_reason := _hidden_reason(laser, source_visible, endpoint_data)
+            _trace_hidden_transition(
+                laser_index,
+                state,
+                signature,
+                pivot_position,
+                turret_tip,
+                hide_reason
+            )
             _set_hidden(state)
             _states[key] = state
             continue
@@ -120,6 +147,18 @@ func _physics_process(_delta: float) -> void:
             1,
             MAX_BEAM_INSTANCES
         )
+
+        _trace_visible_sample(
+            laser_index,
+            state,
+            signature,
+            pivot_position,
+            turret_tip,
+            start,
+            finish,
+            count
+        )
+
         var current := _build_beam_buffer(
             start,
             finish,
@@ -129,6 +168,7 @@ func _physics_process(_delta: float) -> void:
 
         var previous := current
         var reset := true
+        var reset_reason := "new_or_reappeared"
         if bool(state.get("visible", false)):
             var previous_buffer = state.get("current", PackedFloat32Array())
             if previous_buffer is PackedFloat32Array:
@@ -137,20 +177,38 @@ func _physics_process(_delta: float) -> void:
                 var old_start := state.get("start", start) as Vector3
                 var old_finish := state.get("finish", finish) as Vector3
                 var old_signature := str(state.get("signature", ""))
-                var signature := _laser_signature(laser)
-                reset = (
-                    old_buffer.size() != current.size()
-                    or old_count != count
-                    or old_signature != signature
-                    or old_start.distance_to(start) > DISCONTINUITY_DISTANCE
-                    or old_finish.distance_to(finish) > DISCONTINUITY_DISTANCE
-                )
-                if not reset:
+
+                if old_buffer.size() != current.size():
+                    reset_reason = "buffer_size"
+                elif old_count != count:
+                    reset_reason = "instance_count"
+                elif old_signature != signature:
+                    reset_reason = "signature_change"
+                elif old_start.distance_to(start) > DISCONTINUITY_DISTANCE:
+                    reset_reason = "start_discontinuity"
+                elif old_finish.distance_to(finish) > DISCONTINUITY_DISTANCE:
+                    reset_reason = "finish_discontinuity"
+                else:
+                    reset = false
+                    reset_reason = "none"
                     previous = old_buffer
 
         if reset:
+            # Never interpolate from an old/obstructed/out-of-range position.
             previous = current
             _stats_resets += 1
+            _trace_records.append(
+                _trace_prefix()
+                + " LASER_RESET laser=%d reason=%s signature=%s start=%s end=%s tip=%s"
+                % [
+                    laser_index,
+                    reset_reason,
+                    signature,
+                    _vec(start),
+                    _vec(finish),
+                    _vec(turret_tip),
+                ]
+            )
 
         var present := state["present"] as MultiMeshInstance3D
         var multimesh := present.multimesh
@@ -168,7 +226,10 @@ func _physics_process(_delta: float) -> void:
         state["visible"] = true
         state["start"] = start
         state["finish"] = finish
-        state["signature"] = _laser_signature(laser)
+        state["signature"] = signature
+        state["pivot_position"] = pivot_position
+        state["turret_tip"] = turret_tip
+        state["last_hide_reason"] = ""
         _states[key] = state
 
     for key in _states.keys():
@@ -222,16 +283,23 @@ func _ensure_state(key: int, source: MultiMeshInstance3D) -> Dictionary:
         "start": Vector3.ZERO,
         "finish": Vector3.ZERO,
         "signature": "",
+        "pivot_position": Vector3.ZERO,
+        "turret_tip": Vector3.ZERO,
+        "last_hide_reason": "",
     }
     _states[key] = state
     return state
 
 
-func _laser_endpoints(laser: Dictionary, pivot: Node3D) -> Dictionary:
-    var start := (
+func _laser_tip_world(pivot: Node3D) -> Vector3:
+    return (
         pivot.global_position
         + pivot.global_basis.y.normalized() * LASER_BARREL_LENGTH
     )
+
+
+func _laser_endpoints(laser: Dictionary, pivot: Node3D) -> Dictionary:
+    var start := _laser_tip_world(pivot)
 
     var chunk = laser.get("chunk", null)
     if chunk is Node3D and is_instance_valid(chunk):
@@ -288,6 +356,137 @@ func _laser_signature(laser: Dictionary) -> String:
         target_id,
         str(laser.get("reserved_cell", null)),
     ]
+
+
+func _hidden_reason(
+    laser: Dictionary,
+    source_visible: bool,
+    endpoint_data: Dictionary
+) -> String:
+    if endpoint_data.is_empty():
+        var target = laser.get("target", null)
+        var chunk = laser.get("chunk", null)
+        if chunk == null and (target == null or not is_instance_valid(target)):
+            return "no_target_or_out_of_range"
+        return "no_endpoints"
+    if not source_visible:
+        return "simulation_hidden_obstructed_or_unaligned"
+    return "hidden"
+
+
+func _trace_visible_sample(
+    laser_index: int,
+    state: Dictionary,
+    signature: String,
+    pivot_position: Vector3,
+    turret_tip: Vector3,
+    start: Vector3,
+    finish: Vector3,
+    count: int
+) -> void:
+    var was_visible := bool(state.get("visible", false))
+    var old_signature := str(state.get("signature", ""))
+    var old_start := state.get("start", start) as Vector3
+    var old_finish := state.get("finish", finish) as Vector3
+    var old_tip := state.get("turret_tip", turret_tip) as Vector3
+    var old_pivot := state.get("pivot_position", pivot_position) as Vector3
+
+    var start_step := old_start.distance_to(start) if was_visible else 0.0
+    var end_step := old_finish.distance_to(finish) if was_visible else 0.0
+    var tip_step := old_tip.distance_to(turret_tip) if was_visible else 0.0
+    var pivot_step := old_pivot.distance_to(pivot_position) if was_visible else 0.0
+
+    _trace_records.append(
+        _trace_prefix()
+        + " LASER_DRAW laser=%d visible=1 signature=%s pivot=%s tip=%s start=%s end=%s count=%d steps[pivot=%.4f tip=%.4f start=%.4f end=%.4f]"
+        % [
+            laser_index,
+            signature,
+            _vec(pivot_position),
+            _vec(turret_tip),
+            _vec(start),
+            _vec(finish),
+            count,
+            pivot_step,
+            tip_step,
+            start_step,
+            end_step,
+        ]
+    )
+
+    # A target/cell/chunk change can legitimately move the endpoint. For a
+    # continuous beam with the same signature, any large one-tick jump is an
+    # error and is duplicated into the main diagnostic log for easy discovery.
+    if was_visible and old_signature == signature:
+        if (
+            pivot_step > SMOOTH_POSITION_WARN_DISTANCE
+            or tip_step > SMOOTH_POSITION_WARN_DISTANCE
+            or start_step > SMOOTH_POSITION_WARN_DISTANCE
+            or end_step > SMOOTH_POSITION_WARN_DISTANCE
+        ):
+            _trace_errors += 1
+            var error_text := (
+                "LASER_POSITION_ERROR laser=%d signature=%s "
+                + "pivot_step=%.4f tip_step=%.4f start_step=%.4f end_step=%.4f "
+                + "old_pivot=%s new_pivot=%s old_tip=%s new_tip=%s "
+                + "old_start=%s new_start=%s old_end=%s new_end=%s"
+            ) % [
+                laser_index,
+                signature,
+                pivot_step,
+                tip_step,
+                start_step,
+                end_step,
+                _vec(old_pivot),
+                _vec(pivot_position),
+                _vec(old_tip),
+                _vec(turret_tip),
+                _vec(old_start),
+                _vec(start),
+                _vec(old_finish),
+                _vec(finish),
+            ]
+            _trace_records.append(_trace_prefix() + " ERROR " + error_text)
+            AppLogger.event(error_text)
+
+
+func _trace_hidden_transition(
+    laser_index: int,
+    state: Dictionary,
+    signature: String,
+    pivot_position: Vector3,
+    turret_tip: Vector3,
+    reason: String
+) -> void:
+    var was_visible := bool(state.get("visible", false))
+    var last_reason := str(state.get("last_hide_reason", ""))
+    if was_visible or last_reason != reason:
+        _trace_records.append(
+            _trace_prefix()
+            + " LASER_HIDDEN laser=%d reason=%s signature=%s pivot=%s tip=%s old_start=%s old_end=%s"
+            % [
+                laser_index,
+                reason,
+                signature,
+                _vec(pivot_position),
+                _vec(turret_tip),
+                _vec(state.get("start", Vector3.ZERO) as Vector3),
+                _vec(state.get("finish", Vector3.ZERO) as Vector3),
+            ]
+        )
+    state["last_hide_reason"] = reason
+
+
+func _trace_prefix() -> String:
+    return "[%s] t=%.3fs tick=%d" % [
+        Time.get_datetime_string_from_system(),
+        float(Time.get_ticks_usec() - _trace_start_usec) / 1_000_000.0,
+        _trace_tick,
+    ]
+
+
+func _vec(value: Vector3) -> String:
+    return "(%.5f,%.5f,%.5f)" % [value.x, value.y, value.z]
 
 
 func _build_beam_buffer(
@@ -350,9 +549,18 @@ func _set_hidden(state: Dictionary) -> void:
                 present.multimesh.get_rid(),
                 0
             )
+
+    # Deliberately erase all prior beam geometry. This is stronger than merely
+    # setting visible=false: no subsequent reappearance can accidentally use a
+    # position captured before an obstruction/out-of-range transition.
     state["visible"] = false
     state["count"] = 0
     state["signature"] = ""
+    state["current"] = PackedFloat32Array()
+    state["start"] = Vector3.ZERO
+    state["finish"] = Vector3.ZERO
+    state["pivot_position"] = Vector3.ZERO
+    state["turret_tip"] = Vector3.ZERO
 
 
 func _restore_original_beams() -> void:
@@ -400,8 +608,8 @@ func _log_stats_if_due() -> void:
             / 1000.0
         )
     AppLogger.event(
-        "LASER_PRESENTER cpu_buffer active=%d avg_physics_sync_ms=%.3f resets=%d"
-        % [_states.size(), avg_ms, _stats_resets]
+        "LASER_PRESENTER cpu_buffer active=%d avg_physics_sync_ms=%.3f resets=%d trace_errors=%d"
+        % [_states.size(), avg_ms, _stats_resets, _trace_errors]
     )
     _stats_start_usec = now
     _stats_sync_usec = 0
@@ -409,6 +617,32 @@ func _log_stats_if_due() -> void:
     _stats_resets = 0
 
 
+func _write_trace_log() -> void:
+    var directory := ""
+    if OS.has_feature("editor"):
+        directory = ProjectSettings.globalize_path("res://")
+    else:
+        directory = OS.get_executable_path().get_base_dir()
+
+    var path := directory.path_join(TRACE_FILE_NAME)
+    var file := FileAccess.open(path, FileAccess.WRITE)
+    if file == null:
+        path = ProjectSettings.globalize_path("user://" + TRACE_FILE_NAME)
+        file = FileAccess.open(path, FileAccess.WRITE)
+    if file == null:
+        return
+
+    for record in _trace_records:
+        file.store_line(record)
+    file.store_line(
+        "Summary: ticks=%d position_errors=%d states=%d"
+        % [_trace_tick, _trace_errors, _states.size()]
+    )
+    file.flush()
+    file.close()
+
+
 func _exit_tree() -> void:
     _restore_original_beams()
+    _write_trace_log()
     _clear_states()
