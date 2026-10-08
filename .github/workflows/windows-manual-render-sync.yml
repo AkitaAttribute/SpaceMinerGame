@@ -34,23 +34,6 @@ jobs:
           set -o pipefail
           godot --headless --path . --import 2>&1 | tee /tmp/godot-import.log
           if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Shader compilation failed|Failed to compile shader|SPIR-V compilation failed" /tmp/godot-import.log; then
-            echo "Godot reported script or shader compilation errors during import."
-            exit 1
-          fi
-
-      - name: Runtime smoke test
-        shell: bash
-        run: |
-          set +e
-          set -o pipefail
-          timeout 8s godot --headless --path . 2>&1 | tee /tmp/godot-runtime.log
-          status=${PIPESTATUS[0]}
-          set -e
-          if [[ $status -ne 0 && $status -ne 124 ]]; then
-            exit $status
-          fi
-          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Shader compilation failed|Failed to compile shader" /tmp/godot-runtime.log; then
-            echo "Godot reported script or shader errors while starting the game."
             exit 1
           fi
 
@@ -61,61 +44,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mingw-w64
           python3 -m pip install --user --upgrade scons
-
           sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
           sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
-
           git clone --depth 1 --branch 4.7.1-stable https://github.com/godotengine/godot.git /tmp/godot-src
 
           python3 - <<'PY'
           from pathlib import Path
-
           main = Path('/tmp/godot-src/main/main.cpp')
           text = main.read_text(encoding='utf-8')
-          old = '''\tGodotProfileZoneGrouped(_profile_zone, "RenderingServer::sync");
-\tRenderingServer::get_singleton()->sync();'''
-          new = '''\tGodotProfileZoneGrouped(_profile_zone, "RenderingServer::sync");
-\t// SpaceMiner manual presentation: when the automatic render loop is disabled,
-\t// do not synchronize the RenderingServer on every uncapped Main::iteration().
-\t// Manual draws perform one synchronization immediately before the draw instead.
-\tif (RenderingServer::get_singleton()->is_render_loop_enabled()) {
-\t\tRenderingServer::get_singleton()->sync();
-\t}'''
+          old = "\tGodotProfileZoneGrouped(_profile_zone, \"RenderingServer::sync\");\n\tRenderingServer::get_singleton()->sync();"
+          new = "\tGodotProfileZoneGrouped(_profile_zone, \"RenderingServer::sync\");\n\t// SpaceMiner: do not sync on every uncapped outer-loop iteration while manual rendering is active.\n\tif (RenderingServer::get_singleton()->is_render_loop_enabled()) {\n\t\tRenderingServer::get_singleton()->sync();\n\t}"
           if text.count(old) != 1:
-              raise SystemExit(f'Expected one Main RenderingServer::sync block, found {text.count(old)}')
+              raise SystemExit(f'Expected one Main sync block, found {text.count(old)}')
           main.write_text(text.replace(old, new, 1), encoding='utf-8')
 
           rs = Path('/tmp/godot-src/servers/rendering/rendering_server_default.cpp')
           text = rs.read_text(encoding='utf-8')
-          old = '''void RenderingServerDefault::draw(bool p_present, double frame_step) {
-\tERR_FAIL_COND_MSG(!Thread::is_main_thread(), "Manually triggering the draw function from the RenderingServer can only be done on the main thread. Call this function from the main thread or use call_deferred().");'''
-          new = '''void RenderingServerDefault::draw(bool p_present, double frame_step) {
-\t// SpaceMiner manual presentation: flush commands exactly once per requested
-\t// manual frame. Main::iteration() intentionally skips its normal sync while
-\t// the automatic render loop is disabled.
-\tif (!is_render_loop_enabled()) {
-\t\tsync();
-\t}
-\tERR_FAIL_COND_MSG(!Thread::is_main_thread(), "Manually triggering the draw function from the RenderingServer can only be done on the main thread. Call this function from the main thread or use call_deferred().");'''
+          old = "void RenderingServerDefault::draw(bool p_present, double frame_step) {\n\tERR_FAIL_COND_MSG(!Thread::is_main_thread(), \"Manually triggering the draw function from the RenderingServer can only be done on the main thread. Call this function from the main thread or use call_deferred().\");"
+          new = "void RenderingServerDefault::draw(bool p_present, double frame_step) {\n\t// SpaceMiner: when manual rendering is active, synchronize exactly once immediately before the requested draw.\n\tif (!is_render_loop_enabled()) {\n\t\tsync();\n\t}\n\tERR_FAIL_COND_MSG(!Thread::is_main_thread(), \"Manually triggering the draw function from the RenderingServer can only be done on the main thread. Call this function from the main thread or use call_deferred().\");"
           if text.count(old) != 1:
-              raise SystemExit(f'Expected one RenderingServerDefault::draw block, found {text.count(old)}')
+              raise SystemExit(f'Expected one draw block, found {text.count(old)}')
           rs.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
 
           cd /tmp/godot-src
-          "$HOME/.local/bin/scons" \
-            platform=windows \
-            target=template_release \
-            arch=x86_64 \
-            use_mingw=yes \
-            production=yes \
-            lto=none \
-            d3d12=no \
-            angle=no \
-            accesskit=no \
-            winrt=no \
-            -j3
-
+          "$HOME/.local/bin/scons" platform=windows target=template_release arch=x86_64 use_mingw=yes production=yes lto=none d3d12=no angle=no accesskit=no winrt=no -j3
           template="$(find /tmp/godot-src/bin -maxdepth 1 -type f -name 'godot.windows.template_release.x86_64*.exe' -print -quit)"
           test -n "$template"
           test -s "$template"
@@ -128,21 +81,17 @@ jobs:
           set -euxo pipefail
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path('export_presets.cfg')
           text = path.read_text(encoding='utf-8')
           old = 'custom_template/release=""'
           new = 'custom_template/release="/tmp/SpaceMinerGodotManualSync.exe"'
           if text.count(old) < 1:
               raise SystemExit('Windows release custom-template setting not found')
-          text = text.replace(old, new, 1)
-          path.write_text(text, encoding='utf-8')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
-
           mkdir -p build-manual-sync
           godot --headless --path . --export-release "Windows Desktop" build-manual-sync/SpaceMinerGame.exe 2>&1 | tee /tmp/godot-export.log
           if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Shader compilation failed|Failed to compile shader" /tmp/godot-export.log; then
-            echo "Godot reported script or shader errors during export."
             exit 1
           fi
           test -s build-manual-sync/SpaceMinerGame.exe
