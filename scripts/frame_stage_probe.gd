@@ -13,6 +13,7 @@ var _pre_to_post_ms := 0.0
 var _post_to_process_ms := 0.0
 var _process_interval_ms := 0.0
 var _hitch_count := 0
+var _last_presentation_serial := -1
 
 
 func _ready() -> void:
@@ -43,6 +44,7 @@ func _ready() -> void:
         + "VSync: %s\n" % _vsync_name(DisplayServer.window_get_vsync_mode())
         + "Max FPS: %d\n" % Engine.max_fps
         + "Hitch threshold: %.1f ms\n" % HITCH_THRESHOLD_MS
+        + "Manual presentation aware: true\n"
         + "No disk writes occur until normal application shutdown."
     )
 
@@ -50,6 +52,21 @@ func _ready() -> void:
 func _process(delta: float) -> void:
     if not _enabled:
         return
+
+    var frame_ms := delta * 1000.0
+
+    # The outer Godot loop is intentionally uncapped while manual presentation
+    # is active. Ignore no-draw polling iterations and sample once for each
+    # frame that was actually presented.
+    if FramePacer.is_manual_presentation_enabled():
+        var serial := FramePacer.presentation_serial
+        if serial == _last_presentation_serial:
+            return
+        _last_presentation_serial = serial
+        if FramePacer.last_present_interval_usec > 0:
+            frame_ms = (
+                float(FramePacer.last_present_interval_usec) / 1000.0
+            )
 
     var now_usec := Time.get_ticks_usec()
 
@@ -65,7 +82,6 @@ func _process(delta: float) -> void:
         else:
             _post_to_process_ms = -1.0
 
-    var frame_ms := delta * 1000.0
     if frame_ms >= HITCH_THRESHOLD_MS:
         _hitch_count += 1
         _records.append(_snapshot("HITCH", frame_ms, now_usec))
@@ -99,10 +115,21 @@ func _on_frame_post_draw() -> void:
 
 func _snapshot(kind: String, frame_ms: float, now_usec: int) -> String:
     var elapsed := float(now_usec - _start_usec) / 1000000.0
+    var displayed_fps := Engine.get_frames_per_second()
+    var present_serial := -1
+    var force_draw_ms := -1.0
+
+    if FramePacer.is_manual_presentation_enabled():
+        if FramePacer.measured_fps > 0.0:
+            displayed_fps = FramePacer.measured_fps
+        present_serial = FramePacer.presentation_serial
+        force_draw_ms = float(FramePacer.last_force_draw_usec) / 1000.0
+
     return (
         "[%s] %s t=%.3fs frame=%.2fms process_interval=%.2fms "
         + "process_to_pre=%.2fms pre_to_post=%.2fms "
-        + "post_to_process=%.2fms driver=%s vsync=%s max_fps=%d fps=%.1f "
+        + "post_to_process=%.2fms force_draw=%.2fms driver=%s "
+        + "vsync=%s max_fps=%d presented_fps=%.1f serial=%d "
         + "focused=%s hitches=%d"
     ) % [
         Time.get_datetime_string_from_system(),
@@ -113,10 +140,12 @@ func _snapshot(kind: String, frame_ms: float, now_usec: int) -> String:
         _process_to_pre_ms,
         _pre_to_post_ms,
         _post_to_process_ms,
+        force_draw_ms,
         RenderingServer.get_current_rendering_driver_name(),
         _vsync_name(DisplayServer.window_get_vsync_mode()),
         Engine.max_fps,
-        Engine.get_frames_per_second(),
+        displayed_fps,
+        present_serial,
         str(DisplayServer.window_is_focused()),
         _hitch_count,
     ]
