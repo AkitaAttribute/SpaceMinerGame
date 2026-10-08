@@ -8,16 +8,10 @@ extends Node
 # frame for the newest token. Gameplay/physics remain on Godot's fixed physics
 # tick, with physics interpolation providing smooth presentation between ticks.
 #
-# This preserves the proven nonblocking architecture from 924df8b:
-# - all waiting/sleeping occurs on the worker thread;
-# - the main thread uses only Semaphore.try_wait();
-# - stale frame tokens are discarded instead of rendered as a catch-up burst;
-# - automatic rendering stays disabled and force_draw() happens only for a
-#   real presentation token.
-#
-# LaserPresenter is prepared immediately before a real draw. Its presentation
-# path uses CPU-side endpoint history and upload-only MultiMesh buffers, so it
-# adds no waits and performs no RenderingServer readbacks.
+# This avoids both failure modes already observed on this system:
+# - blocking the main thread, which produced periodic 130-180 ms stalls;
+# - allowing every uncapped engine-loop iteration to render, which produced
+#   tens of thousands of rendered frames per second.
 
 const FALLBACK_TARGET_FPS := 60.0
 const STATS_INTERVAL_USEC := 5_000_000
@@ -30,7 +24,6 @@ var measured_fps := 0.0
 var presentation_serial := 0
 var last_present_interval_usec := 0
 var last_force_draw_usec := 0
-var last_laser_prepare_usec := 0
 
 var _enabled := false
 var _worker_started := false
@@ -39,7 +32,6 @@ var _stats_start_usec := 0
 var _stats_frame_count := 0
 var _stats_dropped_tokens := 0
 var _stats_force_draw_usec := 0
-var _stats_laser_prepare_usec := 0
 var _last_present_usec := 0
 
 var _present_semaphore := Semaphore.new()
@@ -50,7 +42,8 @@ var _stop_requested := false
 
 func _ready() -> void:
     process_mode = Node.PROCESS_MODE_ALWAYS
-    # Consume a presentation token before normal scene _process callbacks.
+    # Consume a presentation token before normal scene _process callbacks. This
+    # also makes the frame-stage probe observe only completed manual draws.
     process_priority = -1_000_000
 
     if OS.has_feature("android") or OS.has_feature("ios") or OS.has_feature("mobile"):
@@ -115,11 +108,14 @@ func _process(_delta: float) -> void:
     if not is_manual_presentation_enabled():
         return
 
-    # Completely nonblocking on the main thread.
+    # This is deliberately non-blocking. If no presentation token is ready,
+    # this engine-loop iteration immediately returns without advancing game
+    # state or rendering another frame.
     if not _present_semaphore.try_wait():
         return
 
-    # Never catch up by rendering old deadlines. Keep only the newest frame.
+    # If rendering or startup caused us to miss more than one presentation
+    # deadline, discard stale tokens instead of issuing a catch-up render burst.
     var dropped := 0
     while _present_semaphore.try_wait():
         dropped += 1
@@ -130,15 +126,7 @@ func _process(_delta: float) -> void:
     _last_present_usec = now
     presentation_serial += 1
 
-    # Prepare laser geometry only for frames that will actually be presented.
-    # This is CPU interpolation + one upload per active laser, with no waits or
-    # RenderingServer reads.
-    last_laser_prepare_usec = LaserPresenter.prepare_for_present(
-        Engine.get_physics_interpolation_fraction()
-    )
-    _stats_laser_prepare_usec += last_laser_prepare_usec
-
-    var draw_start := Time.get_ticks_usec()
+    var draw_start := now
     RenderingServer.force_draw(
         true,
         float(_interval_usec) / 1_000_000.0
@@ -154,17 +142,10 @@ func _process(_delta: float) -> void:
             float(_stats_frame_count) * 1_000_000.0
             / float(stats_elapsed)
         )
-
         var avg_draw_ms := 0.0
-        var avg_laser_ms := 0.0
         if _stats_frame_count > 0:
             avg_draw_ms = (
                 float(_stats_force_draw_usec)
-                / float(_stats_frame_count)
-                / 1000.0
-            )
-            avg_laser_ms = (
-                float(_stats_laser_prepare_usec)
                 / float(_stats_frame_count)
                 / 1000.0
             )
@@ -178,15 +159,14 @@ func _process(_delta: float) -> void:
                 Engine.get_frames_per_second(),
                 avg_draw_ms,
             ]
-            + "avg_laser_prepare_ms=%.3f dropped_tokens=%d"
-            % [avg_laser_ms, _stats_dropped_tokens]
+            + "dropped_tokens=%d"
+            % _stats_dropped_tokens
         )
 
         _stats_start_usec = Time.get_ticks_usec()
         _stats_frame_count = 0
         _stats_dropped_tokens = 0
         _stats_force_draw_usec = 0
-        _stats_laser_prepare_usec = 0
 
 
 func _pacing_thread_main() -> void:
@@ -195,7 +175,10 @@ func _pacing_thread_main() -> void:
     while not _thread_should_stop():
         var now := Time.get_ticks_usec()
 
-        # Sleeping is allowed only on this worker thread.
+        # Sleep only on the worker thread, in short slices. The 2 ms diagnostic
+        # heartbeat has already shown that a sleeping worker remains responsive
+        # while the problematic stalls affect the main thread. The main thread
+        # never waits for this worker.
         while (
             not _thread_should_stop()
             and next_deadline - now > WORKER_SPIN_TAIL_USEC
@@ -213,7 +196,8 @@ func _pacing_thread_main() -> void:
         if _thread_should_stop():
             return
 
-        # Precision tail also stays off the main thread.
+        # Precision tail stays off the main thread. Even a late worker wakeup
+        # cannot directly suspend game logic or Windows event processing.
         while now < next_deadline:
             now = Time.get_ticks_usec()
 
