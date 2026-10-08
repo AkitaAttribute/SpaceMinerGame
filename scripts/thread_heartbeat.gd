@@ -1,5 +1,9 @@
 extends Node
 
+# Independent worker heartbeat used to distinguish a main-thread stall from a
+# process/system-wide scheduling stall. Records are kept in memory on the
+# worker, then appended to the single SpaceMinerGame.log at shutdown.
+
 const SAMPLE_USEC := 2000
 const GAP_THRESHOLD_MS := 20.0
 const PERIODIC_SECONDS := 10.0
@@ -27,20 +31,14 @@ func _ready() -> void:
         return
 
     _start_ticks_usec = Time.get_ticks_usec()
-    _records.append(
-        "SpaceMiner background thread heartbeat\n"
-        + "Started: %s\n" % Time.get_datetime_string_from_system()
-        + "Engine: %s\n" % str(
-            Engine.get_version_info().get("string", "unknown")
-        )
-        + "Sample interval: %.3f ms\n" % (float(SAMPLE_USEC) / 1000.0)
-        + "Gap threshold: %.1f ms\n" % GAP_THRESHOLD_MS
-        + "No disk writes occur until normal application shutdown."
+    AppLogger.event(
+        "THREAD_HEARTBEAT enabled sample=%.3fms threshold=%.1fms"
+        % [float(SAMPLE_USEC) / 1000.0, GAP_THRESHOLD_MS]
     )
 
     var error := _thread.start(_heartbeat_thread)
     if error != OK:
-        _records.append("THREAD_START_FAILED error=%d" % error)
+        AppLogger.event("THREAD_START_FAILED error=%d" % error)
 
 
 func _heartbeat_thread() -> void:
@@ -65,9 +63,8 @@ func _heartbeat_thread() -> void:
             periodic_gap_count += 1
             _max_gap_ms = maxf(_max_gap_ms, gap_ms)
             _records.append(
-                "[%s] THREAD_GAP t=%.3fs tick_usec=%d gap=%.2fms count=%d"
+                "THREAD_GAP t=%.3fs tick_usec=%d gap=%.2fms count=%d"
                 % [
-                    Time.get_datetime_string_from_system(),
                     float(now_ticks - _start_ticks_usec) / 1000000.0,
                     now_ticks,
                     gap_ms,
@@ -77,9 +74,9 @@ func _heartbeat_thread() -> void:
 
         if now_ticks >= next_periodic_ticks:
             _records.append(
-                "[%s] THREAD_PERIODIC t=%.3fs tick_usec=%d window_max_gap=%.2fms gaps_over_%.0fms=%d"
+                "THREAD_PERIODIC t=%.3fs tick_usec=%d window_max_gap=%.2fms "
+                + "gaps_over_%.0fms=%d"
                 % [
-                    Time.get_datetime_string_from_system(),
                     float(now_ticks - _start_ticks_usec) / 1000000.0,
                     now_ticks,
                     periodic_max_gap,
@@ -105,34 +102,6 @@ func _request_stop() -> void:
     _stop_mutex.unlock()
 
 
-func _write_log() -> void:
-    var directory := ""
-    if OS.has_feature("editor"):
-        directory = ProjectSettings.globalize_path("res://")
-    else:
-        directory = OS.get_executable_path().get_base_dir()
-
-    var path := directory.path_join("SpaceMinerHeartbeat.log")
-    var file := FileAccess.open(path, FileAccess.WRITE)
-
-    if file == null:
-        path = ProjectSettings.globalize_path("user://SpaceMinerHeartbeat.log")
-        file = FileAccess.open(path, FileAccess.WRITE)
-
-    if file == null:
-        return
-
-    for record in _records:
-        file.store_line(record)
-
-    file.store_line(
-        "Summary: background-thread gaps >=%.1fms=%d max_gap=%.2fms"
-        % [GAP_THRESHOLD_MS, _gap_count, _max_gap_ms]
-    )
-    file.flush()
-    file.close()
-
-
 func _exit_tree() -> void:
     if not _enabled:
         return
@@ -141,11 +110,18 @@ func _exit_tree() -> void:
     if _thread.is_started():
         _thread.wait_to_finish()
 
-    _records.append(
-        "[%s] THREAD_EXIT t=%.3fs"
+    # AppLogger is the only component that writes a diagnostic file. Avoid
+    # calling it from the worker while it is running; merge records here after
+    # the worker has stopped.
+    for record in _records:
+        AppLogger.event(record)
+
+    AppLogger.event(
+        "THREAD_EXIT t=%.3fs gaps_over_%.0fms=%d max_gap=%.2fms"
         % [
-            Time.get_datetime_string_from_system(),
             float(Time.get_ticks_usec() - _start_ticks_usec) / 1000000.0,
+            GAP_THRESHOLD_MS,
+            _gap_count,
+            _max_gap_ms,
         ]
     )
-    _write_log()
