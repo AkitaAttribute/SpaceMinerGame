@@ -1,14 +1,21 @@
 extends Node
 
-# Lightweight presentation-only mining laser bridge for the Windows manual
-# renderer. Simulation remains authoritative for targeting, obstruction,
-# turret motion, mining state and beam visibility. We snapshot only the final
-# 60 Hz endpoints and interpolate a single MeshInstance3D transform at monitor
-# presentation rate. No MultiMesh buffer is rebuilt or uploaded per frame.
+# Windows-only presentation bridge for mining lasers under the manual frame
+# pacer. Simulation remains authoritative for targeting, obstruction, turret
+# motion, mining state, and beam visibility.
 #
-# The source MultiMesh is suppressed with its VisualInstance3D layer mask,
-# never by changing `visible`. Simulation owns `visible`, so changing it here
-# would feed the presenter's own hidden state back into the next physics tick.
+# IMPORTANT ARCHITECTURE:
+# - Simulation and this presenter run at the fixed 60 Hz physics rate.
+# - FramePacer does NO laser work. Its hot path remains:
+#   try_wait -> discard stale tokens -> force_draw.
+# - The replacement beam is a single MeshInstance3D whose transform is updated
+#   once per physics tick.
+# - Godot's built-in physics interpolation smooths that transform between
+#   physics ticks for manual presentation frames.
+# - The source MultiMesh is suppressed with its render-layer mask, never by
+#   changing `visible`. Simulation owns `visible`.
+# - Reappearing, retargeted, or discontinuous beams reset interpolation history
+#   so old/obstructed geometry can never be blended into the new beam.
 
 const LASER_BARREL_LENGTH := 0.42
 const LASER_MINING_SECONDS := 5.0
@@ -24,15 +31,14 @@ var _states: Dictionary = {}
 
 var _stats_start_usec := 0
 var _stats_physics_usec := 0
-var _stats_present_usec := 0
 var _stats_ticks := 0
-var _stats_presents := 0
 var _stats_resets := 0
-var _trace_errors := 0
+var _position_warnings := 0
 
 
 func _ready() -> void:
     process_mode = Node.PROCESS_MODE_ALWAYS
+    # Snapshot only after Simulation has completed its physics update.
     process_physics_priority = 1_000_000
 
     _enabled = OS.has_feature("windows") and not OS.has_feature("headless")
@@ -42,9 +48,9 @@ func _ready() -> void:
 
     _stats_start_usec = Time.get_ticks_usec()
     AppLogger.event(
-        "LASER_PRESENTER transform_only enabled; "
-        + "source MultiMesh suppressed by render layers; "
-        + "no per-present MultiMesh buffer uploads"
+        "LASER_PRESENTER physics_transform enabled; "
+        + "Godot interpolation owns between-tick smoothing; "
+        + "FramePacer performs no laser work"
     )
 
 
@@ -95,9 +101,7 @@ func _physics_process(_delta: float) -> void:
         if state.is_empty():
             continue
 
-        # Capture Simulation's final visibility decision. The source MultiMesh
-        # is hidden from rendering through layers=0 in _ensure_state(), which
-        # deliberately leaves source.visible untouched for Simulation to own.
+        # Simulation owns this flag. The presenter never writes source.visible.
         var source_visible := source.visible
         var endpoint_data := _laser_endpoints(laser, pivot)
         var signature := _laser_signature(laser)
@@ -106,7 +110,10 @@ func _physics_process(_delta: float) -> void:
 
         if not source_visible or endpoint_data.is_empty():
             var reason := _hidden_reason(laser, source_visible, endpoint_data)
-            if bool(state.get("visible", false)) or str(state.get("last_hide_reason", "")) != reason:
+            if (
+                bool(state.get("visible", false))
+                or str(state.get("last_hide_reason", "")) != reason
+            ):
                 AppLogger.event(
                     "LASER_HIDDEN laser=%d reason=%s signature=%s pivot=%s tip=%s"
                     % [
@@ -136,19 +143,7 @@ func _physics_process(_delta: float) -> void:
             and old_finish.distance_to(finish) <= DISCONTINUITY_DISTANCE
         )
 
-        if continuous:
-            state["prev_start"] = old_start
-            state["prev_finish"] = old_finish
-            state["prev_tip"] = state.get("curr_tip", turret_tip)
-            state["prev_pivot"] = state.get("curr_pivot", pivot_position)
-        else:
-            # Reappearing/retargeted beams start exactly at the new geometry.
-            # No position from before an obstruction/out-of-range transition is
-            # retained or interpolated.
-            state["prev_start"] = start
-            state["prev_finish"] = finish
-            state["prev_tip"] = turret_tip
-            state["prev_pivot"] = pivot_position
+        if not continuous:
             _stats_resets += 1
             AppLogger.event(
                 "LASER_RESET laser=%d reason=%s signature=%s start=%s end=%s tip=%s"
@@ -169,6 +164,15 @@ func _physics_process(_delta: float) -> void:
                     _vec(turret_tip),
                 ]
             )
+        else:
+            _check_physics_step(
+                laser_index,
+                signature,
+                old_start,
+                start,
+                old_finish,
+                finish
+            )
 
         state["curr_start"] = start
         state["curr_finish"] = finish
@@ -180,6 +184,17 @@ func _physics_process(_delta: float) -> void:
         state["last_hide_reason"] = ""
 
         var present := state["present"] as MeshInstance3D
+
+        # One transform write per active laser per 60 Hz physics tick.
+        # Rendering between physics ticks is handled by Godot interpolation.
+        _apply_beam_transform(present, start, finish)
+
+        if not continuous:
+            # The transform was just moved to a new/reappeared target. Collapse
+            # interpolation history to the new transform so no stale geometry
+            # can be blended into the next rendered frame.
+            present.reset_physics_interpolation()
+
         present.visible = true
         _states[key] = state
 
@@ -192,71 +207,13 @@ func _physics_process(_delta: float) -> void:
     _log_stats_if_due()
 
 
-# Called only when FramePacer has a real presentation token. This path changes
-# Node3D transforms only; it performs no RenderingServer resource-buffer writes.
-func prepare_for_present(interpolation_fraction: float) -> int:
-    if not _enabled or not FramePacer.is_manual_presentation_enabled():
-        return 0
-
-    var started := Time.get_ticks_usec()
-    var fraction := clampf(interpolation_fraction, 0.0, 1.0)
-
-    for key in _states.keys():
-        var state_value = _states.get(key, null)
-        if not (state_value is Dictionary):
-            continue
-        var state := state_value as Dictionary
-        if not bool(state.get("visible", false)):
-            continue
-
-        var present_value = state.get("present", null)
-        if not (present_value is MeshInstance3D) or not is_instance_valid(present_value):
-            continue
-        var present := present_value as MeshInstance3D
-
-        var prev_start := state.get("prev_start", Vector3.ZERO) as Vector3
-        var curr_start := state.get("curr_start", prev_start) as Vector3
-        var prev_finish := state.get("prev_finish", Vector3.ZERO) as Vector3
-        var curr_finish := state.get("curr_finish", prev_finish) as Vector3
-        var prev_tip := state.get("prev_tip", Vector3.ZERO) as Vector3
-        var curr_tip := state.get("curr_tip", prev_tip) as Vector3
-        var prev_pivot := state.get("prev_pivot", Vector3.ZERO) as Vector3
-        var curr_pivot := state.get("curr_pivot", prev_pivot) as Vector3
-
-        var draw_start := prev_start.lerp(curr_start, fraction)
-        var draw_finish := prev_finish.lerp(curr_finish, fraction)
-        var draw_tip := prev_tip.lerp(curr_tip, fraction)
-        var draw_pivot := prev_pivot.lerp(curr_pivot, fraction)
-
-        _apply_beam_transform(present, draw_start, draw_finish)
-        _check_present_jump(
-            state,
-            draw_pivot,
-            draw_tip,
-            draw_start,
-            draw_finish
-        )
-
-        state["last_present_start"] = draw_start
-        state["last_present_finish"] = draw_finish
-        state["last_present_tip"] = draw_tip
-        state["last_present_pivot"] = draw_pivot
-        state["had_present"] = true
-        _states[key] = state
-
-    var elapsed := Time.get_ticks_usec() - started
-    _stats_present_usec += elapsed
-    _stats_presents += 1
-    return elapsed
-
-
 func _ensure_state(key: int, source: MultiMeshInstance3D) -> Dictionary:
     var existing = _states.get(key, null)
     if existing is Dictionary:
         var existing_state := existing as Dictionary
         var present_value = existing_state.get("present", null)
         if present_value is MeshInstance3D and is_instance_valid(present_value):
-            # Keep the original beam out of render passes without changing the
+            # Keep the original beam out of render passes without touching the
             # Simulation-owned visible flag.
             source.layers = 0
             return existing_state
@@ -290,7 +247,9 @@ func _ensure_state(key: int, source: MultiMeshInstance3D) -> Dictionary:
     present.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
     present.visible = false
     present.top_level = true
-    present.set_physics_interpolation_mode(Node.PHYSICS_INTERPOLATION_MODE_OFF)
+    # This is the smoothing mechanism. FramePacer does not manually interpolate
+    # or update this node at presentation rate.
+    present.set_physics_interpolation_mode(Node.PHYSICS_INTERPOLATION_MODE_ON)
     parent.add_child(present)
 
     var source_layers := source.layers
@@ -303,19 +262,10 @@ func _ensure_state(key: int, source: MultiMeshInstance3D) -> Dictionary:
         "visible": false,
         "signature": "",
         "laser_index": -1,
-        "prev_start": Vector3.ZERO,
         "curr_start": Vector3.ZERO,
-        "prev_finish": Vector3.ZERO,
         "curr_finish": Vector3.ZERO,
-        "prev_tip": Vector3.ZERO,
         "curr_tip": Vector3.ZERO,
-        "prev_pivot": Vector3.ZERO,
         "curr_pivot": Vector3.ZERO,
-        "last_present_start": Vector3.ZERO,
-        "last_present_finish": Vector3.ZERO,
-        "last_present_tip": Vector3.ZERO,
-        "last_present_pivot": Vector3.ZERO,
-        "had_present": false,
         "last_hide_reason": "",
     }
     _states[key] = state
@@ -341,51 +291,34 @@ func _apply_beam_transform(
     var basis := Basis.looking_at(direction, up)
     basis = basis.scaled(Vector3(BEAM_WIDTH, BEAM_WIDTH, distance))
     present.global_transform = Transform3D(basis, (start + finish) * 0.5)
-    present.visible = true
 
 
-func _check_present_jump(
-    state: Dictionary,
-    pivot: Vector3,
-    tip: Vector3,
+func _check_physics_step(
+    laser_index: int,
+    signature: String,
+    old_start: Vector3,
     start: Vector3,
+    old_finish: Vector3,
     finish: Vector3
 ) -> void:
-    if not bool(state.get("had_present", false)):
-        return
-
-    var old_start := state.get("last_present_start", start) as Vector3
-    var old_finish := state.get("last_present_finish", finish) as Vector3
-    var old_tip := state.get("last_present_tip", tip) as Vector3
-    var old_pivot := state.get("last_present_pivot", pivot) as Vector3
-
-    var pivot_step := old_pivot.distance_to(pivot)
-    var tip_step := old_tip.distance_to(tip)
     var start_step := old_start.distance_to(start)
     var finish_step := old_finish.distance_to(finish)
-    var largest := maxf(maxf(pivot_step, tip_step), maxf(start_step, finish_step))
+    var largest := maxf(start_step, finish_step)
     if largest <= SMOOTH_POSITION_WARN_DISTANCE:
         return
 
-    _trace_errors += 1
+    _position_warnings += 1
     AppLogger.event(
         (
-            "LASER_POSITION_ERROR laser=%d signature=%s "
-            + "pivot_step=%.4f tip_step=%.4f start_step=%.4f end_step=%.4f "
-            + "old_pivot=%s new_pivot=%s old_tip=%s new_tip=%s "
+            "LASER_POSITION_WARN laser=%d signature=%s "
+            + "start_step=%.4f end_step=%.4f "
             + "old_start=%s new_start=%s old_end=%s new_end=%s"
         )
         % [
-            int(state.get("laser_index", -1)),
-            str(state.get("signature", "")),
-            pivot_step,
-            tip_step,
+            laser_index,
+            signature,
             start_step,
             finish_step,
-            _vec(old_pivot),
-            _vec(pivot),
-            _vec(old_tip),
-            _vec(tip),
             _vec(old_start),
             _vec(start),
             _vec(old_finish),
@@ -490,19 +423,10 @@ func _set_hidden(state: Dictionary) -> void:
 
     state["visible"] = false
     state["signature"] = ""
-    state["prev_start"] = Vector3.ZERO
     state["curr_start"] = Vector3.ZERO
-    state["prev_finish"] = Vector3.ZERO
     state["curr_finish"] = Vector3.ZERO
-    state["prev_tip"] = Vector3.ZERO
     state["curr_tip"] = Vector3.ZERO
-    state["prev_pivot"] = Vector3.ZERO
     state["curr_pivot"] = Vector3.ZERO
-    state["last_present_start"] = Vector3.ZERO
-    state["last_present_finish"] = Vector3.ZERO
-    state["last_present_tip"] = Vector3.ZERO
-    state["last_present_pivot"] = Vector3.ZERO
-    state["had_present"] = false
 
 
 func _free_state(key) -> void:
@@ -551,30 +475,23 @@ func _log_stats_if_due() -> void:
     var avg_physics_ms := 0.0
     if _stats_ticks > 0:
         avg_physics_ms = float(_stats_physics_usec) / float(_stats_ticks) / 1000.0
-    var avg_present_ms := 0.0
-    if _stats_presents > 0:
-        avg_present_ms = float(_stats_present_usec) / float(_stats_presents) / 1000.0
 
     AppLogger.event(
         (
-            "LASER_PRESENTER transform_only active=%d avg_physics_ms=%.3f "
-            + "avg_present_ms=%.3f presents=%d resets=%d trace_errors=%d"
+            "LASER_PRESENTER physics_transform active=%d avg_physics_ms=%.3f "
+            + "resets=%d position_warnings=%d"
         )
         % [
             _visible_state_count(),
             avg_physics_ms,
-            avg_present_ms,
-            _stats_presents,
             _stats_resets,
-            _trace_errors,
+            _position_warnings,
         ]
     )
 
     _stats_start_usec = now
     _stats_physics_usec = 0
-    _stats_present_usec = 0
     _stats_ticks = 0
-    _stats_presents = 0
     _stats_resets = 0
 
 
@@ -586,6 +503,7 @@ func _exit_tree() -> void:
     if not _enabled:
         return
     AppLogger.event(
-        "LASER_PRESENTER exit transform_only trace_errors=%d" % _trace_errors
+        "LASER_PRESENTER exit physics_transform position_warnings=%d"
+        % _position_warnings
     )
     _restore_original_beams()
