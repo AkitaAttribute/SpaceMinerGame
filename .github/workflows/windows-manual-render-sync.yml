@@ -1,9 +1,6 @@
 name: Windows manual-render stock-sync build
 
 on:
-  push:
-    branches:
-      - prototype/ship-builder-first-pass
   workflow_dispatch:
 
 permissions:
@@ -62,11 +59,6 @@ jobs:
             exit 1
           fi
 
-      # IMPORTANT: Do not patch Godot's Main::iteration RenderingServer::sync().
-      # The threaded manual presenter was already working with stock 4.7.1.
-      # Commit 8822e63 removed the per-iteration sync and allowed the uncapped
-      # outer loop to run at thousands/tens of thousands of iterations/sec.
-      # That experiment is intentionally reverted here.
       - name: Export Windows executable with stock render sync
         shell: bash
         run: |
