@@ -5,10 +5,16 @@ extends Node
 # Two marker nodes bracket ordinary SceneTree process/physics callbacks so a
 # long stall can be classified as happening before callbacks, inside callbacks,
 # or around rendering/presentation.
+#
+# IMPORTANT: the Godot outer loop is intentionally uncapped for the manual
+# presenter and can run thousands of times per second. Diagnostic UI work must
+# never run once per outer-loop iteration. The profiler row is therefore
+# refreshed at only 2 Hz, matching the simulation profiler cadence.
 
 const GAP_THRESHOLD_MS := 20.0
 const SEVERE_GAP_THRESHOLD_MS := 50.0
 const PERIODIC_SECONDS := 5.0
+const UI_REFRESH_SECONDS := 0.50
 const EARLY_PRIORITY := -900_000
 const LATE_PRIORITY := 900_000
 const UI_TAG := "Main thread:"
@@ -16,16 +22,14 @@ const UI_TAG := "Main thread:"
 var _enabled := false
 var _records: Array[String] = []
 var _start_usec := 0
-var _last_early_process_usec := 0
 var _last_late_process_usec := 0
 var _early_process_usec := 0
-var _last_early_physics_usec := 0
 var _last_late_physics_usec := 0
 var _early_physics_usec := 0
-var _last_pre_draw_usec := 0
 var _last_post_draw_usec := 0
 var _pre_draw_usec := 0
 var _next_periodic_usec := 0
+var _next_ui_refresh_usec := 0
 
 var _before_process_gaps := 0
 var _process_span_gaps := 0
@@ -63,12 +67,12 @@ func _ready() -> void:
         or OS.has_feature("mobile")
         or OS.has_feature("headless")
     )
-
     if not _enabled:
         return
 
     _start_usec = Time.get_ticks_usec()
     _next_periodic_usec = _start_usec + int(PERIODIC_SECONDS * 1_000_000.0)
+    _next_ui_refresh_usec = _start_usec + int(UI_REFRESH_SECONDS * 1_000_000.0)
 
     var early := StageMarker.new()
     early.name = "EarlyMainThreadMarker"
@@ -97,9 +101,10 @@ func _ready() -> void:
         + "Engine: %s\n" % str(Engine.get_version_info().get("string", "unknown"))
         + "Process bracket priorities: %d .. %d\n" % [EARLY_PRIORITY, LATE_PRIORITY]
         + "Gap threshold: %.1f ms severe: %.1f ms\n" % [GAP_THRESHOLD_MS, SEVERE_GAP_THRESHOLD_MS]
+        + "Profiler UI refresh: %.2f s (never per outer-loop iteration)\n" % UI_REFRESH_SECONDS
         + "No disk writes occur until normal application shutdown."
     )
-    AppLogger.event("MAIN_THREAD_PROBE enabled threshold=%.1fms" % GAP_THRESHOLD_MS)
+    AppLogger.event("MAIN_THREAD_PROBE enabled threshold=%.1fms ui_refresh=%.2fs" % [GAP_THRESHOLD_MS, UI_REFRESH_SECONDS])
 
 
 func _stage_process(stage: String) -> void:
@@ -114,7 +119,6 @@ func _stage_process(stage: String) -> void:
                 _record_gap("before_process", gap_ms, now)
                 _before_process_gaps += 1
         _early_process_usec = now
-        _last_early_process_usec = now
         return
 
     if _early_process_usec > 0:
@@ -122,14 +126,20 @@ func _stage_process(stage: String) -> void:
         if span_ms >= GAP_THRESHOLD_MS:
             _record_gap("process_callbacks", span_ms, now)
             _process_span_gaps += 1
-    _last_late_process_usec = now
+
     _periodic(now)
 
-    # The simulation rewrites its profiler label during its own _process().
-    # This late-priority marker runs after normal scene callbacks, so restore
-    # the diagnostic row every frame before rendering. This prevents the row
-    # and the profiler panel from flickering between two different heights.
-    _refresh_performance_panel()
+    # The old implementation rebuilt Label.text, split/joined strings, queried
+    # minimum size, and resized the panel on EVERY uncapped Godot outer-loop
+    # iteration. That could run several thousand times per second and was the
+    # diagnostic regression we were trying to measure. Do this only at 2 Hz.
+    if now >= _next_ui_refresh_usec:
+        _refresh_performance_panel()
+        _next_ui_refresh_usec = Time.get_ticks_usec() + int(UI_REFRESH_SECONDS * 1_000_000.0)
+
+    # Record the end timestamp AFTER any diagnostic work. This prevents probe
+    # overhead from being misclassified as a later before_process stall.
+    _last_late_process_usec = Time.get_ticks_usec()
 
 
 func _stage_physics(stage: String) -> void:
@@ -140,12 +150,10 @@ func _stage_physics(stage: String) -> void:
     if stage == "early":
         if _last_late_physics_usec > 0:
             var interval_ms := float(now - _last_late_physics_usec) / 1000.0
-            # Normal 60 Hz physics cadence is ~16.7 ms. Only log a missed tick.
             if interval_ms >= GAP_THRESHOLD_MS:
                 _record_gap("before_physics", interval_ms, now)
                 _before_physics_gaps += 1
         _early_physics_usec = now
-        _last_early_physics_usec = now
         return
 
     if _early_physics_usec > 0:
@@ -159,7 +167,6 @@ func _stage_physics(stage: String) -> void:
 func _on_frame_pre_draw() -> void:
     if not _enabled:
         return
-
     var now := Time.get_ticks_usec()
     if _last_post_draw_usec > 0:
         var interval_ms := float(now - _last_post_draw_usec) / 1000.0
@@ -167,13 +174,11 @@ func _on_frame_pre_draw() -> void:
             _record_gap("between_draws", interval_ms, now)
             _draw_gaps += 1
     _pre_draw_usec = now
-    _last_pre_draw_usec = now
 
 
 func _on_frame_post_draw() -> void:
     if not _enabled:
         return
-
     var now := Time.get_ticks_usec()
     if _pre_draw_usec > 0:
         var draw_ms := float(now - _pre_draw_usec) / 1000.0
@@ -251,27 +256,18 @@ func _periodic_record(now_usec: int) -> String:
 
 
 func _total_gap_count() -> int:
-    return (
-        _before_process_gaps
-        + _process_span_gaps
-        + _before_physics_gaps
-        + _physics_span_gaps
-        + _draw_gaps
-    )
+    return _before_process_gaps + _process_span_gaps + _before_physics_gaps + _physics_span_gaps + _draw_gaps
 
 
 func get_ui_summary() -> String:
-    return (
-        "%s gaps %d  severe %d  max %.1f ms  last %s %.1f ms"
-        % [
-            UI_TAG,
-            _total_gap_count(),
-            _severe_gaps,
-            _max_gap_ms,
-            _last_gap_kind,
-            _last_gap_ms,
-        ]
-    )
+    return "%s gaps %d  severe %d  max %.1f ms  last %s %.1f ms" % [
+        UI_TAG,
+        _total_gap_count(),
+        _severe_gaps,
+        _max_gap_ms,
+        _last_gap_kind,
+        _last_gap_ms,
+    ]
 
 
 func _refresh_performance_panel() -> void:
@@ -284,13 +280,9 @@ func _refresh_performance_panel() -> void:
             if _performance_panel != null:
                 _performance_label = _find_first_label(_performance_panel)
 
-    if _performance_panel == null or _performance_label == null:
-        return
-    if not _performance_panel.visible:
+    if _performance_panel == null or _performance_label == null or not _performance_panel.visible:
         return
 
-    # The simulation owns all normal profiler text. Remove an existing probe
-    # row and append exactly one current row every frame.
     var lines := _performance_label.text.split("\n")
     var clean_lines: PackedStringArray = []
     for line in lines:
@@ -299,9 +291,8 @@ func _refresh_performance_panel() -> void:
     clean_lines.append(get_ui_summary())
     _performance_label.text = "\n".join(clean_lines)
 
-    # Always size from the complete label including the diagnostic row. Because
-    # this executes at late process priority every frame, the panel never gets
-    # rendered at the shorter height created by the simulation's text refresh.
+    # Size only when the 2 Hz text refresh occurs. Keep enough room for the
+    # always-present Main thread row so the panel does not expand/shrink.
     var text_size := _performance_label.get_minimum_size()
     var desired_width := clampf(text_size.x + 26.0, 360.0, 455.0)
     var desired_height := clampf(text_size.y + 24.0, 180.0, 390.0)
@@ -322,7 +313,6 @@ func _find_first_label(node: Node) -> Label:
 func _notification(what: int) -> void:
     if not _enabled:
         return
-
     var name := ""
     match what:
         NOTIFICATION_APPLICATION_FOCUS_IN:
@@ -337,25 +327,16 @@ func _notification(what: int) -> void:
             name = "window_focus_in"
         NOTIFICATION_WM_WINDOW_FOCUS_OUT:
             name = "window_focus_out"
-
     if not name.is_empty():
-        _records.append(
-            "[%s] MAIN_NOTIFICATION t=%.3fs event=%s"
-            % [
-                Time.get_datetime_string_from_system(),
-                float(Time.get_ticks_usec() - _start_usec) / 1_000_000.0,
-                name,
-            ]
-        )
+        _records.append("[%s] MAIN_NOTIFICATION t=%.3fs event=%s" % [
+            Time.get_datetime_string_from_system(),
+            float(Time.get_ticks_usec() - _start_usec) / 1_000_000.0,
+            name,
+        ])
 
 
 func _write_log() -> void:
-    var directory := ""
-    if OS.has_feature("editor"):
-        directory = ProjectSettings.globalize_path("res://")
-    else:
-        directory = OS.get_executable_path().get_base_dir()
-
+    var directory := ProjectSettings.globalize_path("res://") if OS.has_feature("editor") else OS.get_executable_path().get_base_dir()
     var path := directory.path_join("SpaceMinerMainThread.log")
     var file := FileAccess.open(path, FileAccess.WRITE)
     if file == null:
@@ -363,23 +344,19 @@ func _write_log() -> void:
         file = FileAccess.open(path, FileAccess.WRITE)
     if file == null:
         return
-
     for record in _records:
         file.store_line(record)
-    file.store_line(
-        "Summary: before_process=%d process_callbacks=%d before_physics=%d physics_callbacks=%d draw_related=%d severe=%d max_gap=%.2fms last=%s:%.2fms"
-        % [
-            _before_process_gaps,
-            _process_span_gaps,
-            _before_physics_gaps,
-            _physics_span_gaps,
-            _draw_gaps,
-            _severe_gaps,
-            _max_gap_ms,
-            _last_gap_kind,
-            _last_gap_ms,
-        ]
-    )
+    file.store_line("Summary: before_process=%d process_callbacks=%d before_physics=%d physics_callbacks=%d draw_related=%d severe=%d max_gap=%.2fms last=%s:%.2fms" % [
+        _before_process_gaps,
+        _process_span_gaps,
+        _before_physics_gaps,
+        _physics_span_gaps,
+        _draw_gaps,
+        _severe_gaps,
+        _max_gap_ms,
+        _last_gap_kind,
+        _last_gap_ms,
+    ])
     file.flush()
     file.close()
 
@@ -387,11 +364,9 @@ func _write_log() -> void:
 func _exit_tree() -> void:
     if not _enabled:
         return
-
     if RenderingServer.frame_pre_draw.is_connected(_on_frame_pre_draw):
         RenderingServer.frame_pre_draw.disconnect(_on_frame_pre_draw)
     if RenderingServer.frame_post_draw.is_connected(_on_frame_post_draw):
         RenderingServer.frame_post_draw.disconnect(_on_frame_post_draw)
-
     _records.append(_periodic_record(Time.get_ticks_usec()).replace("MAIN_PERIODIC", "MAIN_EXIT"))
     _write_log()
