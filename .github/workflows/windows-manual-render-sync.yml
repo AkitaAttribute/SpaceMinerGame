@@ -1,4 +1,4 @@
-name: Windows manual-render sync build
+name: Windows manual-render stock-sync build
 
 on:
   push:
@@ -16,13 +16,13 @@ concurrency:
 jobs:
   build-windows-manual-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Godot 4.7.1 Linux editor
+      - name: Install stock Godot 4.7.1 and export templates
         shell: bash
         run: |
           set -euxo pipefail
@@ -30,6 +30,12 @@ jobs:
           unzip -q /tmp/godot.zip -d /tmp/godot
           chmod +x /tmp/godot/Godot_v4.7.1-stable_linux.x86_64
           sudo mv /tmp/godot/Godot_v4.7.1-stable_linux.x86_64 /usr/local/bin/godot
+
+          curl -L -o /tmp/templates.tpz https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_export_templates.tpz
+          mkdir -p /tmp/export-templates
+          unzip -q /tmp/templates.tpz -d /tmp/export-templates
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.7.1.stable"
+          cp -R /tmp/export-templates/templates/* "$HOME/.local/share/godot/export_templates/4.7.1.stable/"
           godot --version
 
       - name: Import and compile project
@@ -41,71 +47,42 @@ jobs:
             exit 1
           fi
 
-      - name: Build patched Windows Godot template
+      - name: Simulation smoke test
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          timeout 10s godot --headless --path . -- --simulation-smoke 2>&1 | tee /tmp/godot-simulation.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ $status -ne 0 && $status -ne 124 ]]; then
+            exit $status
+          fi
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Invalid call|Invalid access|Condition .* is true|ERROR:" /tmp/godot-simulation.log; then
+            exit 1
+          fi
+
+      # IMPORTANT: Do not patch Godot's Main::iteration RenderingServer::sync().
+      # The threaded manual presenter was already working with stock 4.7.1.
+      # Commit 8822e63 removed the per-iteration sync and allowed the uncapped
+      # outer loop to run at thousands/tens of thousands of iterations/sec.
+      # That experiment is intentionally reverted here.
+      - name: Export Windows executable with stock render sync
         shell: bash
         run: |
           set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64
-          python3 -m pip install --user --upgrade scons
-          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
-          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
-          git clone --depth 1 --branch 4.7.1-stable https://github.com/godotengine/godot.git /tmp/godot-src
-
-          python3 - <<'PY'
-          from pathlib import Path
-          main = Path('/tmp/godot-src/main/main.cpp')
-          text = main.read_text(encoding='utf-8')
-          old = "\tGodotProfileZoneGrouped(_profile_zone, \"RenderingServer::sync\");\n\tRenderingServer::get_singleton()->sync();"
-          new = "\tGodotProfileZoneGrouped(_profile_zone, \"RenderingServer::sync\");\n\t// SpaceMiner: do not sync on every uncapped outer-loop iteration while manual rendering is active.\n\tif (RenderingServer::get_singleton()->is_render_loop_enabled()) {\n\t\tRenderingServer::get_singleton()->sync();\n\t}"
-          if text.count(old) != 1:
-              raise SystemExit(f'Expected one Main sync block, found {text.count(old)}')
-          main.write_text(text.replace(old, new, 1), encoding='utf-8')
-
-          rs = Path('/tmp/godot-src/servers/rendering/rendering_server_default.cpp')
-          text = rs.read_text(encoding='utf-8')
-          old = "void RenderingServerDefault::draw(bool p_present, double frame_step) {\n\tERR_FAIL_COND_MSG(!Thread::is_main_thread(), \"Manually triggering the draw function from the RenderingServer can only be done on the main thread. Call this function from the main thread or use call_deferred().\");"
-          new = "void RenderingServerDefault::draw(bool p_present, double frame_step) {\n\t// SpaceMiner: when manual rendering is active, synchronize exactly once immediately before the requested draw.\n\tif (!is_render_loop_enabled()) {\n\t\tsync();\n\t}\n\tERR_FAIL_COND_MSG(!Thread::is_main_thread(), \"Manually triggering the draw function from the RenderingServer can only be done on the main thread. Call this function from the main thread or use call_deferred().\");"
-          if text.count(old) != 1:
-              raise SystemExit(f'Expected one draw block, found {text.count(old)}')
-          rs.write_text(text.replace(old, new, 1), encoding='utf-8')
-          PY
-
-          cd /tmp/godot-src
-          "$HOME/.local/bin/scons" platform=windows target=template_release arch=x86_64 use_mingw=yes production=yes lto=none d3d12=no angle=no accesskit=no winrt=no -j3
-          template="$(find /tmp/godot-src/bin -maxdepth 1 -type f -name 'godot.windows.template_release.x86_64*.exe' -print -quit)"
-          test -n "$template"
-          test -s "$template"
-          cp "$template" /tmp/SpaceMinerGodotManualSync.exe
-          ls -lh /tmp/SpaceMinerGodotManualSync.exe
-
-      - name: Export Windows executable with patched template
-        shell: bash
-        run: |
-          set -euxo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('export_presets.cfg')
-          text = path.read_text(encoding='utf-8')
-          old = 'custom_template/release=""'
-          new = 'custom_template/release="/tmp/SpaceMinerGodotManualSync.exe"'
-          if text.count(old) < 1:
-              raise SystemExit('Windows release custom-template setting not found')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
-          PY
           mkdir -p build-manual-sync
           godot --headless --path . --export-release "Windows Desktop" build-manual-sync/SpaceMinerGame.exe 2>&1 | tee /tmp/godot-export.log
           if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Shader compilation failed|Failed to compile shader" /tmp/godot-export.log; then
             exit 1
           fi
           test -s build-manual-sync/SpaceMinerGame.exe
-          test "$(find build-manual-sync -maxdepth 1 -type f | wc -l)" -eq 1
           ls -lh build-manual-sync/
 
-      - name: Upload Windows manual-sync build
+      - name: Upload Windows stock-sync manual-render build
         uses: actions/upload-artifact@v4
         with:
-          name: SpaceMinerGame-Windows-manual-sync-${{ github.sha }}
+          name: SpaceMinerGame-Windows-manual-stock-sync-${{ github.sha }}
           path: build-manual-sync/SpaceMinerGame.exe
           if-no-files-found: error
           retention-days: 14
