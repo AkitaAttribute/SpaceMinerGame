@@ -31,6 +31,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Remove 4.7-only mobile joystick API for 4.6 desktop A/B
+        if: matrix.godot_version == '4.6.3'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/simulation.gd')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              'var mobile_joystick: VirtualJoystick': 'var mobile_joystick',
+              'VirtualJoystick.new()': 'Control.new()',
+              'VirtualJoystick.JOYSTICK_FIXED': '0',
+              'VirtualJoystick.VISIBILITY_ALWAYS': '0',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'Missing expected 4.7-only mobile token: {old}')
+              text = text.replace(old, new)
+          path.write_text(text, encoding='utf-8')
+          PY
+
       - name: Configure exclusive fullscreen variant
         if: matrix.exclusive_fullscreen
         shell: bash
