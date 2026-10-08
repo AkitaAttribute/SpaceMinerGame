@@ -103,7 +103,13 @@ func configure_orbit(
     orbit_angle = angle
     orbit_height = height
     orbit_linear_speed = linear_speed
-    _far_orbit_accum = 0.0
+    # Spread far-body transform writes across physics frames instead of having
+    # hundreds of ring asteroids wake on the same 10 Hz boundary. The tiny
+    # one-time phase advance is below a tenth of a second of orbital travel.
+    _far_orbit_accum = (
+        float(abs(hash(asteroid_id)) % 1000) / 1000.0
+        * FAR_ORBIT_UPDATE_INTERVAL
+    )
     _update_orbit_position()
 
 
