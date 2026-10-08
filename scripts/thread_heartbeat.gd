@@ -74,8 +74,10 @@ func _heartbeat_thread() -> void:
 
         if now_ticks >= next_periodic_ticks:
             _records.append(
-                "THREAD_PERIODIC t=%.3fs tick_usec=%d window_max_gap=%.2fms "
-                + "gaps_over_%.0fms=%d"
+                (
+                    "THREAD_PERIODIC t=%.3fs tick_usec=%d window_max_gap=%.2fms "
+                    + "gaps_over_%.0fms=%d"
+                )
                 % [
                     float(now_ticks - _start_ticks_usec) / 1000000.0,
                     now_ticks,
