@@ -5,6 +5,10 @@ extends Node
 # turret motion, mining state and beam visibility. We snapshot only the final
 # 60 Hz endpoints and interpolate a single MeshInstance3D transform at monitor
 # presentation rate. No MultiMesh buffer is rebuilt or uploaded per frame.
+#
+# The source MultiMesh is suppressed with its VisualInstance3D layer mask,
+# never by changing `visible`. Simulation owns `visible`, so changing it here
+# would feed the presenter's own hidden state back into the next physics tick.
 
 const LASER_BARREL_LENGTH := 0.42
 const LASER_MINING_SECONDS := 5.0
@@ -39,6 +43,7 @@ func _ready() -> void:
     _stats_start_usec = Time.get_ticks_usec()
     AppLogger.event(
         "LASER_PRESENTER transform_only enabled; "
+        + "source MultiMesh suppressed by render layers; "
         + "no per-present MultiMesh buffer uploads"
     )
 
@@ -90,14 +95,14 @@ func _physics_process(_delta: float) -> void:
         if state.is_empty():
             continue
 
-        # Capture Simulation's final decision first, then hide its particle
-        # MultiMesh so only the inexpensive presentation beam is rendered.
+        # Capture Simulation's final visibility decision. The source MultiMesh
+        # is hidden from rendering through layers=0 in _ensure_state(), which
+        # deliberately leaves source.visible untouched for Simulation to own.
         var source_visible := source.visible
         var endpoint_data := _laser_endpoints(laser, pivot)
         var signature := _laser_signature(laser)
         var pivot_position := pivot.global_position
         var turret_tip := _laser_tip_world(pivot)
-        source.visible = false
 
         if not source_visible or endpoint_data.is_empty():
             var reason := _hidden_reason(laser, source_visible, endpoint_data)
@@ -251,6 +256,9 @@ func _ensure_state(key: int, source: MultiMeshInstance3D) -> Dictionary:
         var existing_state := existing as Dictionary
         var present_value = existing_state.get("present", null)
         if present_value is MeshInstance3D and is_instance_valid(present_value):
+            # Keep the original beam out of render passes without changing the
+            # Simulation-owned visible flag.
+            source.layers = 0
             return existing_state
 
     var parent := source.get_parent()
@@ -285,8 +293,12 @@ func _ensure_state(key: int, source: MultiMeshInstance3D) -> Dictionary:
     present.set_physics_interpolation_mode(Node.PHYSICS_INTERPOLATION_MODE_OFF)
     parent.add_child(present)
 
+    var source_layers := source.layers
+    source.layers = 0
+
     var state := {
         "source": source,
+        "source_layers": source_layers,
         "present": present,
         "visible": false,
         "signature": "",
@@ -357,10 +369,12 @@ func _check_present_jump(
 
     _trace_errors += 1
     AppLogger.event(
-        "LASER_POSITION_ERROR laser=%d signature=%s "
-        + "pivot_step=%.4f tip_step=%.4f start_step=%.4f end_step=%.4f "
-        + "old_pivot=%s new_pivot=%s old_tip=%s new_tip=%s "
-        + "old_start=%s new_start=%s old_end=%s new_end=%s"
+        (
+            "LASER_POSITION_ERROR laser=%d signature=%s "
+            + "pivot_step=%.4f tip_step=%.4f start_step=%.4f end_step=%.4f "
+            + "old_pivot=%s new_pivot=%s old_tip=%s new_tip=%s "
+            + "old_start=%s new_start=%s old_end=%s new_end=%s"
+        )
         % [
             int(state.get("laser_index", -1)),
             str(state.get("signature", "")),
@@ -495,6 +509,11 @@ func _free_state(key) -> void:
     var state_value = _states.get(key, null)
     if state_value is Dictionary:
         var state := state_value as Dictionary
+        var source_value = state.get("source", null)
+        if source_value is MultiMeshInstance3D and is_instance_valid(source_value):
+            var source := source_value as MultiMeshInstance3D
+            source.layers = int(state.get("source_layers", source.layers))
+
         var present_value = state.get("present", null)
         if present_value is Node and is_instance_valid(present_value):
             (present_value as Node).queue_free()
@@ -508,15 +527,19 @@ func _clear_states() -> void:
 
 
 func _restore_original_beams() -> void:
-    for key in _states.keys():
-        var state_value = _states.get(key, null)
-        if not (state_value is Dictionary):
-            continue
-        var state := state_value as Dictionary
-        var source_value = state.get("source", null)
-        if source_value is MultiMeshInstance3D and is_instance_valid(source_value):
-            (source_value as MultiMeshInstance3D).visible = true
+    # _free_state restores each source's original render-layer mask. Do not
+    # force source.visible here; that property belongs to Simulation.
     _clear_states()
+
+
+func _visible_state_count() -> int:
+    var active := 0
+    for state_value in _states.values():
+        if state_value is Dictionary:
+            var state := state_value as Dictionary
+            if bool(state.get("visible", false)):
+                active += 1
+    return active
 
 
 func _log_stats_if_due() -> void:
@@ -533,10 +556,12 @@ func _log_stats_if_due() -> void:
         avg_present_ms = float(_stats_present_usec) / float(_stats_presents) / 1000.0
 
     AppLogger.event(
-        "LASER_PRESENTER transform_only active=%d avg_physics_ms=%.3f "
-        + "avg_present_ms=%.3f presents=%d resets=%d trace_errors=%d"
+        (
+            "LASER_PRESENTER transform_only active=%d avg_physics_ms=%.3f "
+            + "avg_present_ms=%.3f presents=%d resets=%d trace_errors=%d"
+        )
         % [
-            _states.size(),
+            _visible_state_count(),
             avg_physics_ms,
             avg_present_ms,
             _stats_presents,
