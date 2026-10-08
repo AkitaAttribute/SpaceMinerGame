@@ -1,9 +1,6 @@
 name: Windows stutter A/B builds
 
 on:
-  push:
-    branches:
-      - prototype/ship-builder-first-pass
   workflow_dispatch:
 
 permissions:
