@@ -9,7 +9,6 @@ extends Node
 const GAP_THRESHOLD_MS := 20.0
 const SEVERE_GAP_THRESHOLD_MS := 50.0
 const PERIODIC_SECONDS := 5.0
-const UI_REFRESH_SECONDS := 0.50
 const EARLY_PRIORITY := -900_000
 const LATE_PRIORITY := 900_000
 const UI_TAG := "Main thread:"
@@ -27,7 +26,6 @@ var _last_pre_draw_usec := 0
 var _last_post_draw_usec := 0
 var _pre_draw_usec := 0
 var _next_periodic_usec := 0
-var _next_ui_usec := 0
 
 var _before_process_gaps := 0
 var _process_span_gaps := 0
@@ -71,7 +69,6 @@ func _ready() -> void:
 
     _start_usec = Time.get_ticks_usec()
     _next_periodic_usec = _start_usec + int(PERIODIC_SECONDS * 1_000_000.0)
-    _next_ui_usec = _start_usec
 
     var early := StageMarker.new()
     early.name = "EarlyMainThreadMarker"
@@ -126,7 +123,13 @@ func _stage_process(stage: String) -> void:
             _record_gap("process_callbacks", span_ms, now)
             _process_span_gaps += 1
     _last_late_process_usec = now
-    _periodic_and_ui(now)
+    _periodic(now)
+
+    # The simulation rewrites its profiler label during its own _process().
+    # This late-priority marker runs after normal scene callbacks, so restore
+    # the diagnostic row every frame before rendering. This prevents the row
+    # and the profiler panel from flickering between two different heights.
+    _refresh_performance_panel()
 
 
 func _stage_physics(stage: String) -> void:
@@ -218,14 +221,10 @@ func _record_gap(kind: String, gap_ms: float, now_usec: int) -> void:
     AppLogger.event(record.substr(record.find("MAIN_GAP")))
 
 
-func _periodic_and_ui(now_usec: int) -> void:
+func _periodic(now_usec: int) -> void:
     if now_usec >= _next_periodic_usec:
         _records.append(_periodic_record(now_usec))
         _next_periodic_usec = now_usec + int(PERIODIC_SECONDS * 1_000_000.0)
-
-    if now_usec >= _next_ui_usec:
-        _refresh_performance_panel()
-        _next_ui_usec = now_usec + int(UI_REFRESH_SECONDS * 1_000_000.0)
 
 
 func _periodic_record(now_usec: int) -> String:
@@ -251,6 +250,30 @@ func _periodic_record(now_usec: int) -> String:
     ]
 
 
+func _total_gap_count() -> int:
+    return (
+        _before_process_gaps
+        + _process_span_gaps
+        + _before_physics_gaps
+        + _physics_span_gaps
+        + _draw_gaps
+    )
+
+
+func get_ui_summary() -> String:
+    return (
+        "%s gaps %d  severe %d  max %.1f ms  last %s %.1f ms"
+        % [
+            UI_TAG,
+            _total_gap_count(),
+            _severe_gaps,
+            _max_gap_ms,
+            _last_gap_kind,
+            _last_gap_ms,
+        ]
+    )
+
+
 func _refresh_performance_panel() -> void:
     if _performance_panel == null or not is_instance_valid(_performance_panel):
         _performance_panel = null
@@ -266,28 +289,19 @@ func _refresh_performance_panel() -> void:
     if not _performance_panel.visible:
         return
 
-    # The simulation rewrites this label every 0.5 s. Replace our own prior
-    # line, then append one concise main-thread status line.
+    # The simulation owns all normal profiler text. Remove an existing probe
+    # row and append exactly one current row every frame.
     var lines := _performance_label.text.split("\n")
     var clean_lines: PackedStringArray = []
     for line in lines:
         if not str(line).begins_with(UI_TAG):
             clean_lines.append(str(line))
-    clean_lines.append(
-        "%s gaps %d  severe %d  max %.1f ms  last %s %.1f ms"
-        % [
-            UI_TAG,
-            _before_process_gaps + _process_span_gaps,
-            _severe_gaps,
-            _max_gap_ms,
-            _last_gap_kind,
-            _last_gap_ms,
-        ]
-    )
+    clean_lines.append(get_ui_summary())
     _performance_label.text = "\n".join(clean_lines)
 
-    # Size the panel to its actual text instead of reserving the old fixed
-    # 520x374 rectangle. This removes the large unused right/bottom region.
+    # Always size from the complete label including the diagnostic row. Because
+    # this executes at late process priority every frame, the panel never gets
+    # rendered at the shorter height created by the simulation's text refresh.
     var text_size := _performance_label.get_minimum_size()
     var desired_width := clampf(text_size.x + 26.0, 360.0, 455.0)
     var desired_height := clampf(text_size.y + 24.0, 180.0, 390.0)
