@@ -103,8 +103,19 @@ func _snapshot(kind: String, frame_ms: float, now_usec: int) -> String:
     var force_draw_ms := -1.0
 
     if FramePacer.is_manual_presentation_enabled():
+        # Never fall back to Engine FPS here: the outer engine loop is
+        # intentionally uncapped and can be tens of thousands of iterations per
+        # second. Report the measured presentation rate when available, or the
+        # instantaneous rate from the last real presentation interval during
+        # startup before the first five-second pacer sample exists.
         if FramePacer.measured_fps > 0.0:
             displayed_fps = FramePacer.measured_fps
+        elif FramePacer.last_present_interval_usec > 0:
+            displayed_fps = (
+                1000000.0 / float(FramePacer.last_present_interval_usec)
+            )
+        else:
+            displayed_fps = 0.0
         present_serial = FramePacer.presentation_serial
         force_draw_ms = float(FramePacer.last_force_draw_usec) / 1000.0
 
