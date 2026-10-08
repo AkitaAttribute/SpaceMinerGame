@@ -2,22 +2,13 @@ extends Node
 
 # High-resolution main-thread instrumentation for the desktop simulation.
 # Everything is buffered in memory and written only at normal shutdown.
-# Two marker nodes bracket ordinary SceneTree process/physics callbacks so a
-# long stall can be classified as happening before callbacks, inside callbacks,
-# or around rendering/presentation.
-#
-# IMPORTANT: the Godot outer loop is intentionally uncapped for the manual
-# presenter and can run thousands of times per second. Diagnostic UI work must
-# never run once per outer-loop iteration. The profiler row is therefore
-# refreshed at only 2 Hz, matching the simulation profiler cadence.
+# This probe is measurement-only: it never modifies profiler/UI state.
 
 const GAP_THRESHOLD_MS := 20.0
 const SEVERE_GAP_THRESHOLD_MS := 50.0
 const PERIODIC_SECONDS := 5.0
-const UI_REFRESH_SECONDS := 0.50
 const EARLY_PRIORITY := -900_000
 const LATE_PRIORITY := 900_000
-const UI_TAG := "Main thread:"
 
 var _enabled := false
 var _records: Array[String] = []
@@ -29,7 +20,6 @@ var _early_physics_usec := 0
 var _last_post_draw_usec := 0
 var _pre_draw_usec := 0
 var _next_periodic_usec := 0
-var _next_ui_refresh_usec := 0
 
 var _before_process_gaps := 0
 var _process_span_gaps := 0
@@ -41,9 +31,6 @@ var _max_gap_ms := 0.0
 var _last_gap_kind := "none"
 var _last_gap_ms := 0.0
 var _last_gap_elapsed := 0.0
-
-var _performance_panel: PanelContainer
-var _performance_label: Label
 
 
 class StageMarker extends Node:
@@ -72,7 +59,6 @@ func _ready() -> void:
 
     _start_usec = Time.get_ticks_usec()
     _next_periodic_usec = _start_usec + int(PERIODIC_SECONDS * 1_000_000.0)
-    _next_ui_refresh_usec = _start_usec + int(UI_REFRESH_SECONDS * 1_000_000.0)
 
     var early := StageMarker.new()
     early.name = "EarlyMainThreadMarker"
@@ -101,10 +87,10 @@ func _ready() -> void:
         + "Engine: %s\n" % str(Engine.get_version_info().get("string", "unknown"))
         + "Process bracket priorities: %d .. %d\n" % [EARLY_PRIORITY, LATE_PRIORITY]
         + "Gap threshold: %.1f ms severe: %.1f ms\n" % [GAP_THRESHOLD_MS, SEVERE_GAP_THRESHOLD_MS]
-        + "Profiler UI refresh: %.2f s (never per outer-loop iteration)\n" % UI_REFRESH_SECONDS
+        + "UI output: disabled; probe is measurement-only.\n"
         + "No disk writes occur until normal application shutdown."
     )
-    AppLogger.event("MAIN_THREAD_PROBE enabled threshold=%.1fms ui_refresh=%.2fs" % [GAP_THRESHOLD_MS, UI_REFRESH_SECONDS])
+    AppLogger.event("MAIN_THREAD_PROBE enabled threshold=%.1fms ui=disabled" % GAP_THRESHOLD_MS)
 
 
 func _stage_process(stage: String) -> void:
@@ -128,17 +114,6 @@ func _stage_process(stage: String) -> void:
             _process_span_gaps += 1
 
     _periodic(now)
-
-    # The old implementation rebuilt Label.text, split/joined strings, queried
-    # minimum size, and resized the panel on EVERY uncapped Godot outer-loop
-    # iteration. That could run several thousand times per second and was the
-    # diagnostic regression we were trying to measure. Do this only at 2 Hz.
-    if now >= _next_ui_refresh_usec:
-        _refresh_performance_panel()
-        _next_ui_refresh_usec = Time.get_ticks_usec() + int(UI_REFRESH_SECONDS * 1_000_000.0)
-
-    # Record the end timestamp AFTER any diagnostic work. This prevents probe
-    # overhead from being misclassified as a later before_process stall.
     _last_late_process_usec = Time.get_ticks_usec()
 
 
@@ -253,61 +228,6 @@ func _periodic_record(now_usec: int) -> String:
         int(Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME)),
         int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
     ]
-
-
-func _total_gap_count() -> int:
-    return _before_process_gaps + _process_span_gaps + _before_physics_gaps + _physics_span_gaps + _draw_gaps
-
-
-func get_ui_summary() -> String:
-    return "%s gaps %d  severe %d  max %.1f ms  last %s %.1f ms" % [
-        UI_TAG,
-        _total_gap_count(),
-        _severe_gaps,
-        _max_gap_ms,
-        _last_gap_kind,
-        _last_gap_ms,
-    ]
-
-
-func _refresh_performance_panel() -> void:
-    if _performance_panel == null or not is_instance_valid(_performance_panel):
-        _performance_panel = null
-        _performance_label = null
-        var scene := get_tree().current_scene
-        if scene != null:
-            _performance_panel = scene.find_child("PerformanceMetrics", true, false) as PanelContainer
-            if _performance_panel != null:
-                _performance_label = _find_first_label(_performance_panel)
-
-    if _performance_panel == null or _performance_label == null or not _performance_panel.visible:
-        return
-
-    var lines := _performance_label.text.split("\n")
-    var clean_lines: PackedStringArray = []
-    for line in lines:
-        if not str(line).begins_with(UI_TAG):
-            clean_lines.append(str(line))
-    clean_lines.append(get_ui_summary())
-    _performance_label.text = "\n".join(clean_lines)
-
-    # Size only when the 2 Hz text refresh occurs. Keep enough room for the
-    # always-present Main thread row so the panel does not expand/shrink.
-    var text_size := _performance_label.get_minimum_size()
-    var desired_width := clampf(text_size.x + 26.0, 360.0, 455.0)
-    var desired_height := clampf(text_size.y + 24.0, 180.0, 390.0)
-    _performance_panel.offset_right = _performance_panel.offset_left + desired_width
-    _performance_panel.offset_bottom = _performance_panel.offset_top + desired_height
-
-
-func _find_first_label(node: Node) -> Label:
-    for child in node.get_children():
-        if child is Label:
-            return child as Label
-        var nested := _find_first_label(child)
-        if nested != null:
-            return nested
-    return null
 
 
 func _notification(what: int) -> void:
