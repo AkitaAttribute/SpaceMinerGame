@@ -4,6 +4,7 @@ extends AnimatableBody3D
 const MIN_GRID_SIZE := 3
 const MAX_GRID_SIZE := 9
 const CELL_SIZE := 1.0
+const FAR_ORBIT_UPDATE_INTERVAL := 0.10
 
 const FACE_DIRECTIONS: Array[Vector3i] = [
     Vector3i(1, 0, 0),
@@ -38,6 +39,8 @@ var _visual: MeshInstance3D
 var _surface_material: StandardMaterial3D
 var _collision_shapes: Array[CollisionShape3D] = []
 var _collision_boxes: Array[AABB] = []
+var _collision_active := true
+var _far_orbit_accum := 0.0
 var _debug_hitboxes_visible := false
 var _debug_hitbox_root: Node3D
 
@@ -58,6 +61,8 @@ func configure(
     _remaining_cells = grid_size * grid_size * grid_size
     _geometry_version = 0
     orbit_enabled = false
+    _collision_active = true
+    _far_orbit_accum = 0.0
 
     var rng := RandomNumberGenerator.new()
     rng.seed = seed_value
@@ -98,13 +103,19 @@ func configure_orbit(
     orbit_angle = angle
     orbit_height = height
     orbit_linear_speed = linear_speed
+    _far_orbit_accum = 0.0
     _update_orbit_position()
 
 
 func update_spin(delta: float) -> void:
     if orbit_enabled:
+        # If this asteroid just crossed back from the throttled far path,
+        # consume any partial far-orbit time once so its orbital phase remains
+        # continuous. Spin itself was intentionally paused while far away.
+        var orbit_delta := delta + _far_orbit_accum
+        _far_orbit_accum = 0.0
         orbit_angle = fposmod(
-            orbit_angle + (orbit_linear_speed / orbit_radius) * delta,
+            orbit_angle + (orbit_linear_speed / orbit_radius) * orbit_delta,
             TAU
         )
         _update_orbit_position()
@@ -116,14 +127,32 @@ func update_far_orbit(delta: float) -> void:
     if not orbit_enabled:
         return
 
+    # Far ring bodies are tiny on screen but, because this node is an
+    # AnimatableBody3D, every transform write also crosses into the physics
+    # server. Updating hundreds of distant bodies at 60 Hz wastes main-thread
+    # time and can produce persistent presentation jitter on slower CPUs.
+    # Accumulate the exact elapsed time and apply the orbit at 10 Hz instead.
+    _far_orbit_accum += delta
+    if _far_orbit_accum < FAR_ORBIT_UPDATE_INTERVAL:
+        return
+
+    var orbit_delta := _far_orbit_accum
+    _far_orbit_accum = 0.0
     orbit_angle = fposmod(
-        orbit_angle + (orbit_linear_speed / orbit_radius) * delta,
+        orbit_angle + (orbit_linear_speed / orbit_radius) * orbit_delta,
         TAU
     )
     _update_orbit_position()
 
 
 func set_collision_active(value: bool) -> void:
+    # Simulation checks the full ring periodically. Avoid queueing hundreds of
+    # identical deferred shape changes when an asteroid's range state did not
+    # actually change.
+    if _collision_active == value:
+        return
+
+    _collision_active = value
     for collision_shape in _collision_shapes:
         if collision_shape != null and is_instance_valid(collision_shape):
             collision_shape.set_deferred("disabled", not value)
@@ -779,6 +808,9 @@ func _sync_collision_shapes() -> void:
         var collision_shape := CollisionShape3D.new()
         collision_shape.shape = box_shape
         collision_shape.position = box.position + box.size * 0.5
+        # Preserve the cached range state across mining collision rebuilds.
+        # Setting this before add_child avoids a deferred physics-server write.
+        collision_shape.disabled = not _collision_active
         add_child(collision_shape)
         _collision_shapes.append(collision_shape)
 
