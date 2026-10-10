@@ -657,31 +657,12 @@ func _is_metallic_cell(cell: Vector3i) -> bool:
 
 
 func _cell_color(cell: Vector3i) -> Color:
+    # Metallic status deliberately does not affect base color. A metallic voxel
+    # uses the same dirt/ice palette value it would have received otherwise;
+    # only the surface material changes its reflectance response.
     var key := "%d:%d:%d:%d" % [_seed, cell.x, cell.y, cell.z]
     var hashed: int = int(abs(hash(key)))
     var normalized := float(hashed % 1000) / 999.0
-
-    if _is_metallic_cell(cell):
-        # Raw exposed metal stays neutral rather than inheriting the dirt/ice
-        # palette. Small deterministic variation prevents a tiled appearance.
-        var metal_dark := Color("#68727b")
-        var metal_bright := Color("#cbd2d7")
-        var metal := metal_dark.lerp(
-            metal_bright,
-            lerpf(0.20, 0.88, normalized)
-        )
-        var metal_detail := lerpf(
-            -0.025,
-            0.025,
-            float((hashed / 1000) % 1000) / 999.0
-        )
-        return Color(
-            clampf(metal.r + metal_detail, 0.0, 1.0),
-            clampf(metal.g + metal_detail, 0.0, 1.0),
-            clampf(metal.b + metal_detail, 0.0, 1.0),
-            1.0
-        )
-
     var mixed := palette_primary.lerp(
         palette_secondary,
         lerpf(0.18, 0.82, normalized)
@@ -708,8 +689,8 @@ func _build_visual() -> void:
 
     _metallic_material = StandardMaterial3D.new()
     _metallic_material.vertex_color_use_as_albedo = true
-    _metallic_material.metallic = 0.92
-    _metallic_material.roughness = 0.24
+    _metallic_material.metallic = 1.0
+    _metallic_material.roughness = 0.18
     _metallic_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 
     _visual = MeshInstance3D.new()
