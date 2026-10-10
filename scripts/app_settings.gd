@@ -5,8 +5,11 @@ signal highlight_color_changed
 signal controls_visibility_changed
 signal controls_scale_changed
 signal bindings_changed
+signal gamepad_support_changed(enabled: bool)
 
 const CONFIG_PATH := "user://space_miner_settings.cfg"
+const SDL_GAMEPAD_IGNORE_EXCEPT_ENV := "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT"
+const SDL_GAMEPAD_IGNORE_ALL_SENTINEL := "0x0000/0x0000"
 
 const ACTION_ORDER: Array[StringName] = [
     &"builder_up",
@@ -44,11 +47,23 @@ var show_controls_on_desktop := false
 var controls_scale_percent := 100.0
 var invert_camera_horizontal := false
 var invert_camera_vertical := true
+var gamepad_enabled := false
+
+var _disabled_gamepad_bindings: Dictionary = {}
+var _owns_sdl_gamepad_ignore := false
 
 func _ready() -> void:
+    gamepad_enabled = _default_gamepad_enabled()
     _ensure_default_actions()
     _disable_tab_focus_navigation()
     _load_settings()
+    _apply_gamepad_support()
+
+func _input(event: InputEvent) -> void:
+    if gamepad_enabled:
+        return
+    if _is_gamepad_input_event(event):
+        get_viewport().set_input_as_handled()
 
 func _ensure_default_actions() -> void:
     var defaults := {
@@ -108,6 +123,7 @@ func _load_settings() -> void:
     controls_scale_percent = float(config.get_value("controls", "scale_percent", 100.0))
     invert_camera_horizontal = bool(config.get_value("controls", "invert_camera_horizontal", false))
     invert_camera_vertical = bool(config.get_value("controls", "invert_camera_vertical", true))
+    gamepad_enabled = bool(config.get_value("controls", "gamepad_enabled", _default_gamepad_enabled()))
 
     for action in ACTION_ORDER:
         var section := "binding/%s" % String(action)
@@ -130,6 +146,7 @@ func save_settings() -> void:
     config.set_value("controls", "scale_percent", controls_scale_percent)
     config.set_value("controls", "invert_camera_horizontal", invert_camera_horizontal)
     config.set_value("controls", "invert_camera_vertical", invert_camera_vertical)
+    config.set_value("controls", "gamepad_enabled", gamepad_enabled)
 
     for action in ACTION_ORDER:
         var codes: Array[int] = []
@@ -181,6 +198,122 @@ func set_invert_camera_horizontal(value: bool) -> void:
 func set_invert_camera_vertical(value: bool) -> void:
     invert_camera_vertical = value
     save_settings()
+
+
+func set_gamepad_enabled(value: bool) -> void:
+    if gamepad_enabled == value:
+        return
+    gamepad_enabled = value
+    _apply_gamepad_support()
+    save_settings()
+    gamepad_support_changed.emit(gamepad_enabled)
+
+
+func _apply_gamepad_support() -> void:
+    _apply_sdl_gamepad_hint()
+    if gamepad_enabled:
+        _restore_gamepad_bindings()
+    else:
+        _capture_and_remove_gamepad_bindings()
+
+
+func _capture_and_remove_gamepad_bindings() -> void:
+    if not _disabled_gamepad_bindings.is_empty():
+        return
+
+    for action in InputMap.get_actions():
+        var removed: Array = []
+        for input_event in InputMap.action_get_events(action).duplicate():
+            if not _is_gamepad_input_event(input_event):
+                continue
+            removed.append(input_event.duplicate())
+            InputMap.action_erase_event(action, input_event)
+        if not removed.is_empty():
+            _disabled_gamepad_bindings[action] = removed
+
+
+func _restore_gamepad_bindings() -> void:
+    for action in _disabled_gamepad_bindings:
+        if not InputMap.has_action(action):
+            continue
+        for input_event in _disabled_gamepad_bindings[action]:
+            if not InputMap.action_has_event(action, input_event):
+                InputMap.action_add_event(action, input_event)
+    _disabled_gamepad_bindings.clear()
+
+
+func _is_gamepad_input_event(input_event: InputEvent) -> bool:
+    return (
+        input_event is InputEventJoypadButton
+        or input_event is InputEventJoypadMotion
+    )
+
+
+func _apply_sdl_gamepad_hint() -> void:
+    # Godot 4.7 has no public runtime switch that completely shuts down its
+    # joypad subsystem. On SDL desktop platforms, also ask SDL to skip every
+    # game controller. InputMap filtering below remains the authoritative
+    # in-game block if SDL already discovered a device before this autoload ran.
+    if not (
+        OS.has_feature("windows")
+        or OS.has_feature("linux")
+        or OS.has_feature("macos")
+    ):
+        return
+
+    if gamepad_enabled:
+        if _owns_sdl_gamepad_ignore:
+            OS.unset_environment(SDL_GAMEPAD_IGNORE_EXCEPT_ENV)
+            _owns_sdl_gamepad_ignore = false
+        return
+
+    if (
+        not OS.has_environment(SDL_GAMEPAD_IGNORE_EXCEPT_ENV)
+        or OS.get_environment(SDL_GAMEPAD_IGNORE_EXCEPT_ENV).strip_edges().is_empty()
+    ):
+        # SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT means every VID/PID not in
+        # the list is skipped. 0000/0000 is deliberately an impossible target.
+        OS.set_environment(
+            SDL_GAMEPAD_IGNORE_EXCEPT_ENV,
+            SDL_GAMEPAD_IGNORE_ALL_SENTINEL
+        )
+        _owns_sdl_gamepad_ignore = true
+
+
+func _default_gamepad_enabled() -> bool:
+    # Physical Steam Deck hardware is the only platform where controller
+    # support is enabled by default. Users can override this with
+    # [controls] gamepad_enabled in space_miner_settings.cfg.
+    if not OS.has_feature("linux"):
+        return false
+
+    var vendor := _read_linux_dmi_value("/sys/class/dmi/id/sys_vendor")
+    var product := _read_linux_dmi_value("/sys/class/dmi/id/product_name")
+    var board := _read_linux_dmi_value("/sys/class/dmi/id/board_name")
+    var have_dmi := not vendor.is_empty() or not product.is_empty() or not board.is_empty()
+
+    if have_dmi:
+        var valve_hardware := vendor.contains("valve")
+        var deck_model := (
+            product.contains("jupiter")
+            or product.contains("galileo")
+            or product.contains("steam deck")
+            or board.contains("jupiter")
+            or board.contains("galileo")
+            or board.contains("steam deck")
+        )
+        return valve_hardware and deck_model
+
+    return (
+        OS.has_environment("SteamDeck")
+        and OS.get_environment("SteamDeck").strip_edges() == "1"
+    )
+
+
+func _read_linux_dmi_value(path: String) -> String:
+    if not FileAccess.file_exists(path):
+        return ""
+    return FileAccess.get_file_as_string(path).strip_edges().to_lower()
 
 
 func should_show_touch_controls() -> bool:
