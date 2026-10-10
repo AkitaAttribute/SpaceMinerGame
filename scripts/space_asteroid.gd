@@ -114,6 +114,11 @@ func configure_orbit(
 
 
 func update_spin(delta: float) -> void:
+    # AnimatableBody3D with sync_to_physics reverts each individual transform
+    # write until the physics server confirms it. Build the new orbit position
+    # and rotation together so one transform write cannot clobber the other.
+    var next_transform := transform
+
     if orbit_enabled:
         # If this asteroid just crossed back from the throttled far path,
         # consume any partial far-orbit time once so its orbital phase remains
@@ -124,24 +129,25 @@ func update_spin(delta: float) -> void:
             orbit_angle + (orbit_linear_speed / orbit_radius) * orbit_delta,
             TAU
         )
-        _update_orbit_position()
+        next_transform.origin = _orbit_position()
 
-    rotate(spin_axis, spin_speed * delta)
+    # Basis.rotated() is the transform equivalent of Node3D.rotate(): the
+    # randomized spin axis remains in parent space, matching the old behavior.
+    next_transform.basis = next_transform.basis.rotated(
+        spin_axis,
+        spin_speed * delta
+    )
+    transform = next_transform
 
 
 func update_far_orbit(delta: float) -> void:
-    # Keep visual spin at the fixed physics rate even while distant orbital
-    # translation is throttled. The old optimization paused this rotation and
-    # made most of the visible ring appear frozen.
-    rotate(spin_axis, spin_speed * delta)
-
     if not orbit_enabled:
         return
 
-    # Far ring bodies are tiny on screen but, because this node is an
-    # AnimatableBody3D, every position write also crosses into the physics
-    # server. Accumulate the exact elapsed time and apply orbital translation
-    # at 10 Hz while leaving the inexpensive rotation continuous at 60 Hz.
+    # Far ring bodies intentionally do not spin. They are tiny on screen and,
+    # because this node is an AnimatableBody3D, every transform write also
+    # crosses into the physics server. Accumulate exact elapsed time and apply
+    # orbital translation at 10 Hz.
     _far_orbit_accum += delta
     if _far_orbit_accum < FAR_ORBIT_UPDATE_INTERVAL:
         return
@@ -168,12 +174,16 @@ func set_collision_active(value: bool) -> void:
             collision_shape.set_deferred("disabled", not value)
 
 
-func _update_orbit_position() -> void:
-    position = orbit_center + Vector3(
+func _orbit_position() -> Vector3:
+    return orbit_center + Vector3(
         cos(orbit_angle) * orbit_radius,
         orbit_height,
         sin(orbit_angle) * orbit_radius
     )
+
+
+func _update_orbit_position() -> void:
+    position = _orbit_position()
 
 
 func bounding_radius() -> float:
