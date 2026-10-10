@@ -34,17 +34,18 @@ jobs:
         run: |
           git clone --depth 1 --branch 4.7.1-stable https://github.com/godotengine/godot.git godot-src
 
-      - name: Apply Space Miner gamepad startup patch
+      - name: Patch Godot gamepad startup
         shell: pwsh
         run: |
-          git -C godot-src apply --check "$env:GITHUB_WORKSPACE\engine_patches\space_miner_gamepad_startup.patch"
-          git -C godot-src apply "$env:GITHUB_WORKSPACE\engine_patches\space_miner_gamepad_startup.patch"
+          python "$env:GITHUB_WORKSPACE\tools\patch_godot_gamepad.py" "$env:GITHUB_WORKSPACE\godot-src"
+          git -C godot-src diff --check
+          git -C godot-src diff -- drivers/sdl/joypad_sdl.h drivers/sdl/joypad_sdl.cpp
 
       - name: Restore Godot SCons cache
         uses: actions/cache@v4
         with:
           path: .scons_cache
-          key: godot-4.7.1-windows-space-miner-${{ runner.arch }}-${{ hashFiles('engine_patches/space_miner_gamepad_startup.patch') }}
+          key: godot-4.7.1-windows-space-miner-${{ runner.arch }}-${{ hashFiles('tools/patch_godot_gamepad.py') }}
           restore-keys: |
             godot-4.7.1-windows-space-miner-${{ runner.arch }}-
 
