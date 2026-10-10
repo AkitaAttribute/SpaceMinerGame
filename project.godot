@@ -1,0 +1,49 @@
+; Engine configuration file.
+; SpaceMinerGame ship-builder prototype.
+config_version=5
+
+[application]
+config/name="Space Miner"
+run/main_scene="res://main.tscn"
+run/flush_stdout_on_print=true
+run/max_fps=60
+
+[autoload]
+AppLogger="*res://scripts/app_logger.gd"
+ThreadHeartbeat="*res://scripts/thread_heartbeat.gd"
+FramePacer="*res://scripts/frame_pacer.gd"
+FrameStageProbe="*res://scripts/frame_stage_probe.gd"
+SpikePredictor="*res://scripts/spike_predictor.gd"
+LaserRenderSmoother="*res://scripts/laser_render_smoother.gd"
+LaserPresenter="*res://scripts/laser_presenter.gd"
+AppSettings="*res://scripts/app_settings.gd"
+GamepadSettingsUI="*res://scripts/gamepad_settings_ui.gd"
+SkyCatalog="*res://scripts/sky_catalog.gd"
+ShipStore="*res://scripts/ship_store.gd"
+
+[debug]
+settings/gdscript/always_track_call_stacks=true
+
+[display]
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/size/window_width_override=1280
+window/size/window_height_override=720
+window/stretch/mode="canvas_items"
+window/handheld/orientation=4
+window/vsync/vsync_mode=0
+
+[physics]
+common/physics_interpolation=true
+common/physics_ticks_per_second=60
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+gl_compatibility/driver.windows="opengl3"
+gl_compatibility/fallback_to_native=true
+textures/vram_compression/import_etc2_astc=true
+environment/defaults/default_clear_color=Color(0.035, 0.045, 0.065, 1)
+
+[input_devices]
+pointing/emulate_touch_from_mouse=false
