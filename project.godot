@@ -6,13 +6,13 @@ config_version=5
 config/name="Space Miner"
 run/main_scene="res://main.tscn"
 run/flush_stdout_on_print=true
-run/max_fps=0
+run/max_fps=60
 
 [autoload]
 AppLogger="*res://scripts/app_logger.gd"
 ThreadHeartbeat="*res://scripts/thread_heartbeat.gd"
-FrameStageProbe="*res://scripts/frame_stage_probe.gd"
 FramePacer="*res://scripts/frame_pacer.gd"
+FrameStageProbe="*res://scripts/frame_stage_probe.gd"
 SpikePredictor="*res://scripts/spike_predictor.gd"
 LaserPresenter="*res://scripts/laser_presenter.gd"
 AppSettings="*res://scripts/app_settings.gd"
