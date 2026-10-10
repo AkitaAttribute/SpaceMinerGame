@@ -63,13 +63,12 @@ jobs:
           Copy-Item $gui "$env:GITHUB_WORKSPACE\custom-template\windows_release_x86_64.exe"
           Copy-Item $console "$env:GITHUB_WORKSPACE\custom-template\windows_release_x86_64_console.exe"
 
-      - name: Upload custom Windows template
-        uses: actions/upload-artifact@v4
+      - name: Cache custom Windows template for export job
+        uses: actions/cache/save@v4
         with:
-          name: SpaceMinerGodot-Windows-Template
-          path: custom-template/*
-          if-no-files-found: error
-          retention-days: 2
+          path: custom-template
+          key: space-miner-windows-template-${{ github.sha }}
+          enableCrossOsArchive: true
 
   build-windows:
     needs: build-custom-windows-template
@@ -102,19 +101,21 @@ jobs:
           cp -R /tmp/export-templates/templates/* "$HOME/.local/share/godot/export_templates/4.7.1.stable/"
           godot --version
 
-      - name: Download custom Windows template
-        uses: actions/download-artifact@v4
+      - name: Restore custom Windows template
+        uses: actions/cache/restore@v4
         with:
-          name: SpaceMinerGodot-Windows-Template
-          path: /tmp/space-miner-template
+          path: custom-template
+          key: space-miner-windows-template-${{ github.sha }}
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
 
       - name: Install custom Windows template
         shell: bash
         run: |
           set -euxo pipefail
           template_dir="$HOME/.local/share/godot/export_templates/4.7.1.stable"
-          cp /tmp/space-miner-template/windows_release_x86_64.exe "$template_dir/windows_release_x86_64.exe"
-          cp /tmp/space-miner-template/windows_release_x86_64_console.exe "$template_dir/windows_release_x86_64_console.exe"
+          cp custom-template/windows_release_x86_64.exe "$template_dir/windows_release_x86_64.exe"
+          cp custom-template/windows_release_x86_64_console.exe "$template_dir/windows_release_x86_64_console.exe"
           ls -lh "$template_dir/windows_release_x86_64"*.exe
 
       - name: Import and compile project
