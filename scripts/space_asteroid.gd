@@ -5,6 +5,7 @@ const MIN_GRID_SIZE := 3
 const MAX_GRID_SIZE := 9
 const CELL_SIZE := 1.0
 const FAR_ORBIT_UPDATE_INTERVAL := 0.10
+const METALLIC_CELL_FRACTION := 0.20
 
 const FACE_DIRECTIONS: Array[Vector3i] = [
     Vector3i(1, 0, 0),
@@ -32,11 +33,13 @@ var orbit_linear_speed := 0.0
 
 var _seed := 0
 var _removed_cells: Dictionary = {}
+var _metallic_cells: Dictionary = {}
 var _surface_cells: Array[Vector3i] = []
 var _remaining_cells := 0
 var _geometry_version := 0
 var _visual: MeshInstance3D
 var _surface_material: StandardMaterial3D
+var _metallic_material: StandardMaterial3D
 var _collision_shapes: Array[CollisionShape3D] = []
 var _collision_boxes: Array[AABB] = []
 var _collision_active := true
@@ -57,6 +60,7 @@ func configure(
     _seed = seed_value
     grid_size = clampi(size_value, MIN_GRID_SIZE, MAX_GRID_SIZE)
     _removed_cells.clear()
+    _metallic_cells.clear()
     _surface_cells.clear()
     _remaining_cells = grid_size * grid_size * grid_size
     _geometry_version = 0
@@ -84,6 +88,11 @@ func configure(
     else:
         palette_primary = Color("#8a5a35")
         palette_secondary = Color("#c7a16c")
+
+    # Material composition belongs to the voxel, not to its current exposure.
+    # Assign the complete asteroid up front so buried metallic cells retain
+    # their identity and render as metal if mining later exposes them.
+    _assign_metallic_cells()
 
     _build_visual()
     _build_collision()
@@ -328,6 +337,7 @@ func prepare_detach_cell(cell: Vector3i) -> Dictionary:
         "version": _geometry_version,
         "cell": cell,
         "color": _cell_color(cell),
+        "metallic": _is_metallic_cell(cell),
         "surface_cells": future_surface,
         "mesh": future_mesh,
         "collision_boxes": future_collision,
@@ -359,6 +369,7 @@ func commit_prepared_detach(prepared: Dictionary) -> Dictionary:
 
     var world_position := to_global(_cell_center(cell))
     var color := prepared.get("color", _cell_color(cell)) as Color
+    var metallic := bool(prepared.get("metallic", _is_metallic_cell(cell)))
 
     _removed_cells[_cell_key(cell)] = true
     _remaining_cells = maxi(0, _remaining_cells - 1)
@@ -390,6 +401,7 @@ func commit_prepared_detach(prepared: Dictionary) -> Dictionary:
     return {
         "position": world_position,
         "color": color,
+        "metallic": metallic,
         "cell": cell,
     }
 
@@ -438,23 +450,41 @@ func _build_surface_mesh(
     surface_cells: Array[Vector3i],
     additionally_removed: Vector3i
 ) -> ArrayMesh:
-    var surface := SurfaceTool.new()
-    surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+    var normal_surface := SurfaceTool.new()
+    normal_surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+    normal_surface.set_material(_surface_material)
+
+    var metallic_surface := SurfaceTool.new()
+    metallic_surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+    metallic_surface.set_material(_metallic_material)
+
+    var normal_face_count := 0
+    var metallic_face_count := 0
 
     for cell in surface_cells:
         var center := _cell_center(cell)
         var color := _cell_color(cell)
+        var is_metallic := _is_metallic_cell(cell)
+        var destination := metallic_surface if is_metallic else normal_surface
 
         for direction in FACE_DIRECTIONS:
             if not _is_occupied_preview(
                 cell + direction,
                 additionally_removed
             ):
-                _append_exposed_face(surface, center, direction, color)
+                _append_exposed_face(destination, center, direction, color)
+                if is_metallic:
+                    metallic_face_count += 1
+                else:
+                    normal_face_count += 1
 
-    var mesh := surface.commit()
-    if _surface_material != null and mesh.get_surface_count() > 0:
-        mesh.surface_set_material(0, _surface_material)
+    var mesh := ArrayMesh.new()
+    if normal_face_count > 0:
+        normal_surface.generate_normals()
+        normal_surface.commit(mesh)
+    if metallic_face_count > 0:
+        metallic_surface.generate_normals()
+        metallic_surface.commit(mesh)
     return mesh
 
 
@@ -592,10 +622,66 @@ func _is_surface_cell(cell: Vector3i) -> bool:
     return false
 
 
+func _assign_metallic_cells() -> void:
+    _metallic_cells.clear()
+
+    var candidates: Array[Vector3i] = []
+    var minimum := _grid_min_index()
+    var maximum := _grid_max_exclusive()
+    for y in range(minimum, maximum):
+        for x in range(minimum, maximum):
+            for z in range(minimum, maximum):
+                candidates.append(Vector3i(x, y, z))
+
+    var metallic_count := clampi(
+        roundi(float(candidates.size()) * METALLIC_CELL_FRACTION),
+        0,
+        candidates.size()
+    )
+
+    # Deterministic partial Fisher-Yates shuffle. This selects exactly the
+    # requested percentage without depending on which voxels happen to start
+    # on the exterior of the asteroid.
+    var rng := RandomNumberGenerator.new()
+    rng.seed = _seed ^ 0x5EED5EED
+    for index in range(metallic_count):
+        var selected := rng.randi_range(index, candidates.size() - 1)
+        var swap := candidates[index]
+        candidates[index] = candidates[selected]
+        candidates[selected] = swap
+        _metallic_cells[_cell_key(candidates[index])] = true
+
+
+func _is_metallic_cell(cell: Vector3i) -> bool:
+    return _metallic_cells.has(_cell_key(cell))
+
+
 func _cell_color(cell: Vector3i) -> Color:
     var key := "%d:%d:%d:%d" % [_seed, cell.x, cell.y, cell.z]
     var hashed: int = int(abs(hash(key)))
     var normalized := float(hashed % 1000) / 999.0
+
+    if _is_metallic_cell(cell):
+        # Raw exposed metal stays neutral rather than inheriting the dirt/ice
+        # palette. Small deterministic variation prevents a tiled appearance.
+        var metal_dark := Color("#68727b")
+        var metal_bright := Color("#cbd2d7")
+        var metal := metal_dark.lerp(
+            metal_bright,
+            lerpf(0.20, 0.88, normalized)
+        )
+        var metal_detail := lerpf(
+            -0.025,
+            0.025,
+            float((hashed / 1000) % 1000) / 999.0
+        )
+        return Color(
+            clampf(metal.r + metal_detail, 0.0, 1.0),
+            clampf(metal.g + metal_detail, 0.0, 1.0),
+            clampf(metal.b + metal_detail, 0.0, 1.0),
+            1.0
+        )
+
     var mixed := palette_primary.lerp(
         palette_secondary,
         lerpf(0.18, 0.82, normalized)
@@ -619,6 +705,12 @@ func _build_visual() -> void:
     _surface_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
     _surface_material.roughness = 1.0
     _surface_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+    _metallic_material = StandardMaterial3D.new()
+    _metallic_material.vertex_color_use_as_albedo = true
+    _metallic_material.metallic = 0.92
+    _metallic_material.roughness = 0.24
+    _metallic_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 
     _visual = MeshInstance3D.new()
     _visual.name = "AsteroidSurface"
