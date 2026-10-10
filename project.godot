@@ -16,6 +16,7 @@ FramePacer="*res://scripts/frame_pacer.gd"
 SpikePredictor="*res://scripts/spike_predictor.gd"
 LaserPresenter="*res://scripts/laser_presenter.gd"
 AppSettings="*res://scripts/app_settings.gd"
+GamepadSettingsUI="*res://scripts/gamepad_settings_ui.gd"
 SkyCatalog="*res://scripts/sky_catalog.gd"
 ShipStore="*res://scripts/ship_store.gd"
 
