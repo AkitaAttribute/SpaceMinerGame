@@ -51,6 +51,8 @@ var gamepad_enabled := false
 
 var _disabled_gamepad_bindings: Dictionary = {}
 var _owns_sdl_gamepad_ignore := false
+var _previous_sdl_gamepad_ignore_exists := false
+var _previous_sdl_gamepad_ignore := ""
 
 func _ready() -> void:
     gamepad_enabled = _default_gamepad_enabled()
@@ -263,21 +265,34 @@ func _apply_sdl_gamepad_hint() -> void:
 
     if gamepad_enabled:
         if _owns_sdl_gamepad_ignore:
-            OS.unset_environment(SDL_GAMEPAD_IGNORE_EXCEPT_ENV)
+            if _previous_sdl_gamepad_ignore_exists:
+                OS.set_environment(
+                    SDL_GAMEPAD_IGNORE_EXCEPT_ENV,
+                    _previous_sdl_gamepad_ignore
+                )
+            else:
+                OS.unset_environment(SDL_GAMEPAD_IGNORE_EXCEPT_ENV)
             _owns_sdl_gamepad_ignore = false
+            _previous_sdl_gamepad_ignore_exists = false
+            _previous_sdl_gamepad_ignore = ""
         return
 
-    if (
-        not OS.has_environment(SDL_GAMEPAD_IGNORE_EXCEPT_ENV)
-        or OS.get_environment(SDL_GAMEPAD_IGNORE_EXCEPT_ENV).strip_edges().is_empty()
-    ):
-        # SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT means every VID/PID not in
-        # the list is skipped. 0000/0000 is deliberately an impossible target.
-        OS.set_environment(
-            SDL_GAMEPAD_IGNORE_EXCEPT_ENV,
-            SDL_GAMEPAD_IGNORE_ALL_SENTINEL
+    if not _owns_sdl_gamepad_ignore:
+        _previous_sdl_gamepad_ignore_exists = OS.has_environment(
+            SDL_GAMEPAD_IGNORE_EXCEPT_ENV
         )
+        if _previous_sdl_gamepad_ignore_exists:
+            _previous_sdl_gamepad_ignore = OS.get_environment(
+                SDL_GAMEPAD_IGNORE_EXCEPT_ENV
+            )
         _owns_sdl_gamepad_ignore = true
+
+    # SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT means every VID/PID not in the
+    # list is skipped. 0000/0000 is deliberately an impossible target.
+    OS.set_environment(
+        SDL_GAMEPAD_IGNORE_EXCEPT_ENV,
+        SDL_GAMEPAD_IGNORE_ALL_SENTINEL
+    )
 
 
 func _default_gamepad_enabled() -> bool:
