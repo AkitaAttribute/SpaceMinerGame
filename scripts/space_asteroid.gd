@@ -117,7 +117,7 @@ func update_spin(delta: float) -> void:
     if orbit_enabled:
         # If this asteroid just crossed back from the throttled far path,
         # consume any partial far-orbit time once so its orbital phase remains
-        # continuous. Spin itself was intentionally paused while far away.
+        # continuous.
         var orbit_delta := delta + _far_orbit_accum
         _far_orbit_accum = 0.0
         orbit_angle = fposmod(
@@ -130,14 +130,18 @@ func update_spin(delta: float) -> void:
 
 
 func update_far_orbit(delta: float) -> void:
+    # Keep visual spin at the fixed physics rate even while distant orbital
+    # translation is throttled. The old optimization paused this rotation and
+    # made most of the visible ring appear frozen.
+    rotate(spin_axis, spin_speed * delta)
+
     if not orbit_enabled:
         return
 
     # Far ring bodies are tiny on screen but, because this node is an
-    # AnimatableBody3D, every transform write also crosses into the physics
-    # server. Updating hundreds of distant bodies at 60 Hz wastes main-thread
-    # time and can produce persistent presentation jitter on slower CPUs.
-    # Accumulate the exact elapsed time and apply the orbit at 10 Hz instead.
+    # AnimatableBody3D, every position write also crosses into the physics
+    # server. Accumulate the exact elapsed time and apply orbital translation
+    # at 10 Hz while leaving the inexpensive rotation continuous at 60 Hz.
     _far_orbit_accum += delta
     if _far_orbit_accum < FAR_ORBIT_UPDATE_INTERVAL:
         return
