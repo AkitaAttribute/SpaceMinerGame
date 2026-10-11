@@ -114,6 +114,26 @@ func event(message: String) -> void:
         _engine_logger.write_event(message)
 
 
+func export_buffered_log(path: String) -> bool:
+    if _engine_logger == null or path.is_empty():
+        return false
+
+    # Add the export marker before taking the snapshot so the saved copy makes
+    # it obvious that it was captured manually while the app was still alive.
+    _engine_logger.write_event("Manual diagnostic log export requested.")
+    var success := _engine_logger.write_to_file(path)
+
+    if success:
+        _engine_logger.write_event("Manual diagnostic log export completed.")
+    else:
+        _engine_logger.write_event(
+            "Manual diagnostic log export failed; FileAccess error=%d."
+            % FileAccess.get_open_error()
+        )
+
+    return success
+
+
 func _write_buffered_log() -> void:
     if _engine_logger == null:
         return
