@@ -4,15 +4,16 @@ extends Node
 #
 # SpaceAsteroid owns which voxels are metallic. Its normal asteroid material is
 # intentionally unshaded so the palette remains readable against the black
-# space background. A physically pure metallic StandardMaterial3D suppresses
-# diffuse color and therefore rendered nearly black in this scene. Instead,
-# preserve the exact unshaded vertex color as the base pass and add a
-# view-dependent sheen as a second pass. The sheen moves as the asteroid or
-# camera rotates, making metallic voxels visually distinct without recoloring
-# them silver/steel.
+# space background. Metallic voxels keep that palette color, but receive two
+# presentation passes:
+# 1. a subtle, angle-independent gray tint so they are identifiable even when
+#    the reflective highlight is not facing the camera;
+# 2. the existing view-dependent sheen that moves as the asteroid/camera angle
+#    changes.
 
 var _scene_id := 0
 var _patched_asteroids: Dictionary = {}
+var _tint_material: ShaderMaterial
 var _sheen_material: ShaderMaterial
 
 
@@ -20,6 +21,8 @@ func _ready() -> void:
     process_mode = Node.PROCESS_MODE_ALWAYS
     process_priority = 700_000
     _sheen_material = _create_sheen_material()
+    _tint_material = _create_tint_material()
+    _tint_material.next_pass = _sheen_material
 
 
 func _process(_delta: float) -> void:
@@ -54,16 +57,43 @@ func _process(_delta: float) -> void:
 
         var material := material_value as StandardMaterial3D
 
-        # Keep the exact voxel palette color visible. The second pass below is
-        # responsible only for the reflective cue.
+        # Keep the voxel's normal dirt/ice color as the base. The chained
+        # passes provide the persistent metal tint and moving reflective cue.
         material.vertex_color_use_as_albedo = true
         material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
         material.metallic = 0.0
         material.roughness = 1.0
         material.cull_mode = BaseMaterial3D.CULL_DISABLED
-        material.next_pass = _sheen_material
+        material.next_pass = _tint_material
 
         _patched_asteroids[asteroid_id] = true
+
+
+func _create_tint_material() -> ShaderMaterial:
+    var shader := Shader.new()
+    shader.code = """
+shader_type spatial;
+render_mode unshaded, blend_mix, cull_disabled, depth_draw_never;
+
+varying vec3 voxel_color;
+
+void vertex() {
+    voxel_color = COLOR.rgb;
+}
+
+void fragment() {
+    // Blend a same-luminance gray over the existing palette color. This lowers
+    // saturation without making blue ice or orange/brown rock converge on one
+    // fixed silver color. At 20% opacity the original hue remains dominant.
+    float luminance = dot(voxel_color, vec3(0.2126, 0.7152, 0.0722));
+    ALBEDO = vec3(luminance);
+    ALPHA = 0.20;
+}
+"""
+
+    var material := ShaderMaterial.new()
+    material.shader = shader
+    return material
 
 
 func _create_sheen_material() -> ShaderMaterial:
