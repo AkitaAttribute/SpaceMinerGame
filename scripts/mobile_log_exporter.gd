@@ -56,9 +56,19 @@ func _process(_delta: float) -> void:
 
 
 func _is_debug_menu(menu: VBoxContainer) -> bool:
-    for child in menu.get_children():
-        if child is Label and (child as Label).text == "Debug":
+    # The Debug title lives inside the header HBox, not directly under the
+    # menu VBox. Search descendants so this matches the actual menu hierarchy.
+    return _contains_debug_title(menu)
+
+
+func _contains_debug_title(node: Node) -> bool:
+    if node is Label and (node as Label).text == "Debug":
+        return true
+
+    for child in node.get_children():
+        if _contains_debug_title(child):
             return true
+
     return false
 
 
@@ -69,6 +79,14 @@ func _clear_menu_refs() -> void:
 
 
 func _inject_export_controls(menu: VBoxContainer) -> void:
+    # Avoid duplicate controls if the menu was rebuilt between process frames.
+    var existing := menu.get_node_or_null("MobileSaveDiagnosticLogButton")
+    if existing is Button:
+        _debug_menu_id = menu.get_instance_id()
+        _button = existing as Button
+        _status_label = menu.get_node_or_null("MobileDiagnosticLogStatus") as Label
+        return
+
     _debug_menu_id = menu.get_instance_id()
 
     var separator := HSeparator.new()
