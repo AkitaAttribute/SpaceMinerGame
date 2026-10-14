@@ -1,19 +1,33 @@
 extends Node
 
-# Replaces the builder's old horizontal part-card strip with one compact button
-# and a centered, drag-safe vertical picker. The builder remains authoritative
-# for selected_part, per-part colors, ghost refresh, placement, and side-bumper
-# cycling; this node only owns the presentation/selection workflow.
+# Builder part-selection presentation.
+#
+# The builder remains authoritative for selected_part, per-part colors, ghost
+# refresh, placement, and side-bumper cycling. This controller replaces the old
+# horizontal card strip with:
+# - one compact button that visibly shows the selected part's 3D preview + name;
+# - a centered, vertical, drag-safe part picker;
+# - single tap/click to highlight, double tap/click to select immediately;
+# - pinned Back / Select buttons below the scroll area;
+# - remembered scroll position and per-part remembered colors in every preview.
 
 const BUILDER_SCRIPT_PATH := "res://scripts/main.gd"
 const DOUBLE_ACTIVATE_MS := 420
 const MIN_ENTRY_HEIGHT := 112.0
 const ENTRY_SCREEN_FRACTION := 0.20
+const SELECTED_BUTTON_HEIGHT := 78.0
 
 var _scene: Node
 var _scene_id := 0
 var _old_parts_scroll: ScrollContainer
 var _selected_part_button: Button
+var _selected_name_label: Label
+var _selected_preview_rect: TextureRect
+var _selected_preview_viewport: SubViewport
+var _selected_preview_root: Node3D
+var _selected_preview_environment: Environment
+var _selected_preview_index := -1
+var _selected_preview_signature := ""
 
 var _picker_open := false
 var _picker_dim: ColorRect
@@ -100,8 +114,8 @@ func _bind_scene(scene: Node) -> void:
     _scene_id = scene.get_instance_id()
     _old_parts_scroll = old_scroll
 
-    # Keep the old card strip alive because main.gd still refreshes it when
-    # selection/colors change, but remove it from layout and input entirely.
+    # main.gd still refreshes the old cards as selection/colors change. Keep
+    # that tree alive but remove it from layout and input.
     _old_parts_scroll.visible = false
 
     var parent := _old_parts_scroll.get_parent()
@@ -111,7 +125,10 @@ func _bind_scene(scene: Node) -> void:
     else:
         _selected_part_button = Button.new()
         _selected_part_button.name = "PartPickerButton"
-        _selected_part_button.custom_minimum_size = Vector2(0.0, 56.0)
+        _selected_part_button.custom_minimum_size = Vector2(
+            0.0,
+            SELECTED_BUTTON_HEIGHT
+        )
         _selected_part_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
         _selected_part_button.pressed.connect(_open_picker)
         parent.add_child(_selected_part_button)
@@ -120,7 +137,57 @@ func _bind_scene(scene: Node) -> void:
             mini(_old_parts_scroll.get_index() + 1, parent.get_child_count() - 1)
         )
 
+    _build_selected_button_contents()
     _sync_selected_part_button(true)
+
+
+func _build_selected_button_contents() -> void:
+    if _selected_part_button == null or not is_instance_valid(_selected_part_button):
+        return
+
+    _selected_part_button.text = ""
+    for child in _selected_part_button.get_children():
+        child.queue_free()
+
+    var overlay := MarginContainer.new()
+    overlay.name = "SelectedPartContents"
+    overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+    overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    overlay.add_theme_constant_override("margin_left", 8)
+    overlay.add_theme_constant_override("margin_right", 10)
+    overlay.add_theme_constant_override("margin_top", 5)
+    overlay.add_theme_constant_override("margin_bottom", 5)
+    _selected_part_button.add_child(overlay)
+
+    var row := HBoxContainer.new()
+    row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    row.add_theme_constant_override("separation", 10)
+    overlay.add_child(row)
+
+    _selected_preview_rect = TextureRect.new()
+    _selected_preview_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _selected_preview_rect.custom_minimum_size = Vector2(90.0, 64.0)
+    _selected_preview_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+    _selected_preview_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+    row.add_child(_selected_preview_rect)
+
+    _selected_name_label = Label.new()
+    _selected_name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    _selected_name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _selected_name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    _selected_name_label.add_theme_font_size_override("font_size", 18)
+    row.add_child(_selected_name_label)
+
+    var arrow := Label.new()
+    arrow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    arrow.text = "▾"
+    arrow.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    arrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    arrow.custom_minimum_size = Vector2(24.0, 0.0)
+    row.add_child(arrow)
+
+    _selected_preview_index = -1
+    _selected_preview_signature = ""
 
 
 func _release_scene() -> void:
@@ -131,6 +198,13 @@ func _release_scene() -> void:
     _scene_id = 0
     _old_parts_scroll = null
     _selected_part_button = null
+    _selected_name_label = null
+    _selected_preview_rect = null
+    _selected_preview_viewport = null
+    _selected_preview_root = null
+    _selected_preview_environment = null
+    _selected_preview_index = -1
+    _selected_preview_signature = ""
 
 
 func _sync_selected_part_button(force := false) -> void:
@@ -143,13 +217,47 @@ func _sync_selected_part_button(force := false) -> void:
 
     var index := _current_selected_part()
     var name := _part_name(index)
-    var desired_text := "%s  ▾" % name
     var desired_tooltip := "Selected part: %s\nOpen part list" % name
 
-    if force or _selected_part_button.text != desired_text:
-        _selected_part_button.text = desired_text
+    if _selected_name_label != null and is_instance_valid(_selected_name_label):
+        if force or _selected_name_label.text != name:
+            _selected_name_label.text = name
+
     if force or _selected_part_button.tooltip_text != desired_tooltip:
         _selected_part_button.tooltip_text = desired_tooltip
+
+    var colors := _colors_for(index)
+    var signature := _color_signature(colors)
+    if force or index != _selected_preview_index:
+        _rebuild_selected_preview(index)
+    elif signature != _selected_preview_signature:
+        if _selected_preview_root != null and is_instance_valid(_selected_preview_root):
+            PartFactory.apply_colors(_selected_preview_root, colors, false)
+            _selected_preview_signature = signature
+            _request_viewport_redraw(_selected_preview_viewport)
+
+
+func _rebuild_selected_preview(index: int) -> void:
+    if _selected_part_button == null or not is_instance_valid(_selected_part_button):
+        return
+    if _selected_preview_rect == null or not is_instance_valid(_selected_preview_rect):
+        return
+
+    if _selected_preview_viewport != null and is_instance_valid(_selected_preview_viewport):
+        _selected_preview_viewport.queue_free()
+
+    var thumbnail := _build_part_thumbnail(
+        index,
+        _selected_part_button,
+        Vector2i(192, 112),
+        "SelectedPartPreview"
+    )
+    _selected_preview_viewport = thumbnail["viewport"] as SubViewport
+    _selected_preview_root = thumbnail["root"] as Node3D
+    _selected_preview_environment = thumbnail["environment"] as Environment
+    _selected_preview_rect.texture = _selected_preview_viewport.get_texture()
+    _selected_preview_index = index
+    _selected_preview_signature = _color_signature(_colors_for(index))
 
 
 func _open_picker() -> void:
@@ -182,7 +290,12 @@ func _open_picker() -> void:
 
     _picker_panel = PanelContainer.new()
     _picker_panel.name = "PartPickerPanel"
-    _picker_panel.set_anchors_preset(Control.PRESET_CENTER)
+    _picker_panel.anchor_left = 0.5
+    _picker_panel.anchor_top = 0.5
+    _picker_panel.anchor_right = 0.5
+    _picker_panel.anchor_bottom = 0.5
+    _picker_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+    _picker_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
     _picker_panel.z_index = 81
     ui_root.add_child(_picker_panel)
 
@@ -224,6 +337,8 @@ func _open_picker() -> void:
     _picker_list.add_theme_constant_override("separation", 8)
     _picker_scroll.add_child(_picker_list)
 
+    # These controls are intentionally outside the ScrollContainer so they stay
+    # pinned to the bottom regardless of list position.
     var actions := HBoxContainer.new()
     actions.add_theme_constant_override("separation", 10)
     content.add_child(actions)
@@ -263,8 +378,13 @@ func _layout_picker() -> void:
     height = maxf(300.0, height)
     height = minf(height, screen.y - 12.0)
 
-    _picker_panel.position = Vector2(-width * 0.5, -height * 0.5)
-    _picker_panel.size = Vector2(width, height)
+    # With all four anchors at 0.5, symmetric offsets are unambiguously centered
+    # in the full-screen ui_root. Do not combine PRESET_CENTER with a negative
+    # position; that caused the previous panel to be shifted off-screen.
+    _picker_panel.offset_left = -width * 0.5
+    _picker_panel.offset_top = -height * 0.5
+    _picker_panel.offset_right = width * 0.5
+    _picker_panel.offset_bottom = height * 0.5
 
 
 func _build_picker_entries() -> void:
@@ -337,25 +457,37 @@ func _add_picker_entry(index: int) -> void:
     )
     text_column.add_child(selected_label)
 
-    var thumbnail := _build_part_thumbnail(index, button)
-    preview.texture = thumbnail["viewport"].get_texture()
+    var thumbnail := _build_part_thumbnail(
+        index,
+        button,
+        Vector2i(320, 160),
+        "PartPreview%d" % index
+    )
+    var viewport := thumbnail["viewport"] as SubViewport
+    preview.texture = viewport.get_texture()
 
     _entry_records[index] = {
         "button": button,
         "selected_label": selected_label,
         "root": thumbnail["root"],
+        "viewport": viewport,
         "environment": thumbnail["environment"],
         "signature": _color_signature(_colors_for(index)),
     }
 
 
-func _build_part_thumbnail(index: int, owner: Node) -> Dictionary:
+func _build_part_thumbnail(
+    index: int,
+    owner: Node,
+    viewport_size: Vector2i,
+    viewport_name: String
+) -> Dictionary:
     var viewport := SubViewport.new()
-    viewport.name = "PartPreview%d" % index
-    viewport.size = Vector2i(320, 160)
+    viewport.name = viewport_name
+    viewport.size = viewport_size
     viewport.transparent_bg = false
     viewport.own_world_3d = true
-    viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+    viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
     owner.add_child(viewport)
 
     var environment_node := WorldEnvironment.new()
@@ -392,6 +524,12 @@ func _build_part_thumbnail(index: int, owner: Node) -> Dictionary:
         "root": root,
         "environment": environment,
     }
+
+
+func _request_viewport_redraw(viewport: SubViewport) -> void:
+    if viewport == null or not is_instance_valid(viewport):
+        return
+    viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 
 func _on_entry_pressed(index: int) -> void:
@@ -506,11 +644,13 @@ func _sync_thumbnail_colors() -> void:
         if signature == str(data.get("signature", "")):
             continue
 
-        if PartFactory.is_color_tool(index):
-            PartFactory.apply_colors(root_value as Node, colors, false)
-        else:
-            PartFactory.apply_colors(root_value as Node, colors, false)
+        PartFactory.apply_colors(root_value as Node, colors, false)
         data["signature"] = signature
+
+        var viewport_value = data.get("viewport", null)
+        if viewport_value is SubViewport and is_instance_valid(viewport_value):
+            _request_viewport_redraw(viewport_value as SubViewport)
+
         _entry_records[index] = data
 
 
@@ -562,6 +702,13 @@ func _thumbnail_background_color() -> Color:
 
 
 func _on_theme_changed() -> void:
+    if (
+        _selected_preview_environment != null
+        and is_instance_valid(_selected_preview_environment)
+    ):
+        _selected_preview_environment.background_color = _thumbnail_background_color()
+        _request_viewport_redraw(_selected_preview_viewport)
+
     if not _picker_open:
         return
 
@@ -572,8 +719,12 @@ func _on_theme_changed() -> void:
     for record in _entry_records.values():
         if not (record is Dictionary):
             continue
-        var environment_value = (record as Dictionary).get("environment", null)
+        var data := record as Dictionary
+        var environment_value = data.get("environment", null)
         if environment_value is Environment:
             (environment_value as Environment).background_color = (
                 _thumbnail_background_color()
             )
+        var viewport_value = data.get("viewport", null)
+        if viewport_value is SubViewport and is_instance_valid(viewport_value):
+            _request_viewport_redraw(viewport_value as SubViewport)
