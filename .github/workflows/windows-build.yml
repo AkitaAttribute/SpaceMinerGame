@@ -6,6 +6,10 @@ on:
       - prototype/ship-builder-first-pass
   workflow_dispatch:
 
+concurrency:
+  group: ship-builder-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -181,30 +185,62 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Prepare Android debug signing
+      - name: Restore persistent Android development signing key
+        id: android-signing-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .android-signing
+          key: space-miner-android-development-signing-v1
+
+      - name: Create Android development signing key once
+        if: steps.android-signing-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euxo pipefail
-          test -d "$ANDROID_HOME"
-          test -x "$JAVA_HOME/bin/keytool"
-          mkdir -p "$HOME/.android"
-          if [[ ! -f "$HOME/.android/debug.keystore" ]]; then
-            "$JAVA_HOME/bin/keytool" -genkeypair -v \
-              -keystore "$HOME/.android/debug.keystore" \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
+          mkdir -p .android-signing
+          "$JAVA_HOME/bin/keytool" -genkeypair -v \
+            -keystore .android-signing/space-miner-development.keystore \
+            -storepass android \
+            -alias spaceminerdevelopment \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 3072 \
+            -validity 10000 \
+            -dname "CN=Space Miner Development,O=AkitaAttribute,C=US"
+
+      - name: Save Android development signing key
+        if: steps.android-signing-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .android-signing
+          key: space-miner-android-development-signing-v1
+
+      - name: Verify Android signing identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s .android-signing/space-miner-development.keystore
+          "$JAVA_HOME/bin/keytool" -list -v \
+            -keystore .android-signing/space-miner-development.keystore \
+            -storepass android \
+            -alias spaceminerdevelopment \
+            | grep -E "Alias name:|SHA256:|Valid from:"
+
+      - name: Set Android build version
+        shell: bash
+        run: |
+          set -euxo pipefail
+          version_code="${GITHUB_RUN_NUMBER}"
+          version_name="0.1.${GITHUB_RUN_NUMBER}"
+          sed -i -E "s/^version\/code=[0-9]+$/version\/code=${version_code}/" export_presets.cfg
+          sed -i -E "s/^version\/name=\"[^\"]*\"$/version\/name=\"${version_name}\"/" export_presets.cfg
+          grep -E '^version/(code|name)=' export_presets.cfg
 
       - name: Export Android debug APK
         shell: bash
         env:
-          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: /home/runner/.android/debug.keystore
-          GODOT_ANDROID_KEYSTORE_DEBUG_USER: androiddebugkey
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ github.workspace }}/.android-signing/space-miner-development.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: spaceminerdevelopment
           GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
         run: |
           set -o pipefail
