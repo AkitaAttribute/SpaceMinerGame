@@ -236,7 +236,7 @@ func _create_single_pass_shader() -> Shader:
     var shader := Shader.new()
     shader.code = """
 shader_type spatial;
-render_mode unshaded, cull_disabled;
+render_mode unshaded, cull_disabled, depth_draw_opaque;
 
 varying vec3 voxel_color;
 varying float effect_code;
@@ -319,7 +319,9 @@ void fragment() {
     }
 
     ALBEDO = clamp(result, vec3(0.0), vec3(1.0));
-    ALPHA = 1.0;
+    // Intentionally do not write ALPHA. Merely writing ALPHA, even as 1.0,
+    // routes the shader through Godot's transparent pipeline and stops the
+    // asteroid exterior from behaving as a solid depth-writing shell.
 }
 """
     return shader
