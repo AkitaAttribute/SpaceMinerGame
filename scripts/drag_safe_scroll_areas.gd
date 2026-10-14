@@ -6,9 +6,11 @@ extends Node
 # The normal ScrollContainer behavior remains in place for blank/non-button
 # areas. When a drag begins on a BaseButton inside a scroll area, this helper
 # takes over after a small movement threshold, scrolls the container directly,
-# and temporarily disables the pressed button until the pointer is released.
-# That prevents a drag gesture from turning into an accidental button press.
-# A new, distinct press is then required before the button can activate.
+# and temporarily removes pointer interaction from every button in that scroll
+# area until the pointer is released. This prevents both accidental activation
+# and the rapid hover/highlight sweep that otherwise occurs while dragging over
+# successive buttons. A new, distinct press is required before any button can
+# activate again.
 
 const DRAG_THRESHOLD_PX := 10.0
 const SIMULATION_SCRIPT_PATH := "res://scripts/simulation.gd"
@@ -26,6 +28,7 @@ var _last_position := Vector2.ZERO
 var _dragging := false
 var _using_touch := false
 var _touch_index := -1
+var _suppressed_button_filters: Dictionary = {}
 
 
 func _ready() -> void:
@@ -167,7 +170,13 @@ func _move_pointer(position: Vector2) -> void:
 
         _dragging = true
         just_started = true
+
+        # Cancel the button that originally received the press, then suppress
+        # pointer interaction for all buttons in this scroll area. The latter is
+        # important on touch devices: otherwise dragging across the list still
+        # drives hover/pressed highlighting even though release is swallowed.
         _pressed_button.disabled = true
+        _suppress_scroll_button_pointer_input(_active_scroll)
 
     if just_started:
         # Include the movement that crossed the dead-zone so the list does not
@@ -208,15 +217,53 @@ func _end_pointer(using_touch: bool, touch_index: int) -> void:
     _touch_index = -1
 
     if was_dragging:
-        # Swallow the release that belongs to the drag. The button remains
-        # disabled for the rest of this input dispatch and is restored deferred,
-        # so the next distinct press is the earliest it can activate again.
+        # Swallow the release that belongs to the drag. Pointer filters and the
+        # original button are restored deferred, after this release dispatch is
+        # fully over, so a separate new press is required to highlight/select.
         get_viewport().set_input_as_handled()
-        if button != null and is_instance_valid(button):
-            call_deferred("_restore_button_after_drag", button)
+        call_deferred("_restore_after_drag", button)
 
 
-func _restore_button_after_drag(button: BaseButton) -> void:
+func _suppress_scroll_button_pointer_input(scroll: ScrollContainer) -> void:
+    _restore_suppressed_button_pointer_input()
+    _suppress_button_pointer_input_recursive(scroll)
+
+
+func _suppress_button_pointer_input_recursive(node: Node) -> void:
+    if node is BaseButton:
+        var button := node as BaseButton
+        if is_instance_valid(button):
+            var key := button.get_instance_id()
+            _suppressed_button_filters[key] = {
+                "button": button,
+                "mouse_filter": button.mouse_filter,
+            }
+            button.mouse_filter = Control.MOUSE_FILTER_IGNORE
+            if button.has_focus():
+                button.release_focus()
+
+    for child in node.get_children():
+        _suppress_button_pointer_input_recursive(child)
+
+
+func _restore_suppressed_button_pointer_input() -> void:
+    for record_value in _suppressed_button_filters.values():
+        if not (record_value is Dictionary):
+            continue
+        var record := record_value as Dictionary
+        var button_value = record.get("button", null)
+        if not (button_value is BaseButton) or not is_instance_valid(button_value):
+            continue
+        var button := button_value as BaseButton
+        button.mouse_filter = int(
+            record.get("mouse_filter", Control.MOUSE_FILTER_STOP)
+        ) as Control.MouseFilter
+
+    _suppressed_button_filters.clear()
+
+
+func _restore_after_drag(button: BaseButton) -> void:
+    _restore_suppressed_button_pointer_input()
     if button != null and is_instance_valid(button):
         button.disabled = false
 
@@ -229,8 +276,9 @@ func _cancel_active_gesture() -> void:
     _using_touch = false
     _touch_index = -1
 
+    _restore_suppressed_button_pointer_input()
     if button != null and is_instance_valid(button) and button.disabled:
-        call_deferred("_restore_button_after_drag", button)
+        button.disabled = false
 
 
 func _pick_scroll_and_button(position: Vector2) -> Dictionary:
