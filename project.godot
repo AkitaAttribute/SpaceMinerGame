@@ -10,6 +10,7 @@ run/max_fps=60
 
 [autoload]
 AppLogger="*res://scripts/app_logger.gd"
+DragSafeScrollAreas="*res://scripts/drag_safe_scroll_areas.gd"
 MobileLogExporter="*res://scripts/mobile_log_exporter.gd"
 ThreadHeartbeat="*res://scripts/thread_heartbeat.gd"
 FramePacer="*res://scripts/frame_pacer.gd"
