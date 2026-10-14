@@ -89,9 +89,16 @@ func _inject_export_controls(menu: VBoxContainer) -> void:
 
     _debug_menu_id = menu.get_instance_id()
 
+    # Keep log export with the core debug controls instead of appending it below
+    # the sky selector/help text. This makes the diagnostic action immediately
+    # reachable while the now-scrollable menu still handles smaller screens.
+    var insert_index := _find_skybox_button_index(menu)
+
     var separator := HSeparator.new()
     separator.name = "MobileDiagnosticLogSeparator"
     menu.add_child(separator)
+    menu.move_child(separator, insert_index)
+    insert_index += 1
 
     _button = Button.new()
     _button.name = "MobileSaveDiagnosticLogButton"
@@ -99,15 +106,24 @@ func _inject_export_controls(menu: VBoxContainer) -> void:
     _button.custom_minimum_size = Vector2(0.0, 56.0)
     _button.pressed.connect(_show_save_dialog)
     menu.add_child(_button)
+    menu.move_child(_button, insert_index)
+    insert_index += 1
 
     _status_label = Label.new()
     _status_label.name = "MobileDiagnosticLogStatus"
-    _status_label.text = (
-        "Saves the current in-memory laser/performance diagnostic log."
-    )
+    _status_label.text = "Saves the current laser/performance diagnostic log."
     _status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     _status_label.modulate.a = 0.76
     menu.add_child(_status_label)
+    menu.move_child(_status_label, insert_index)
+
+
+func _find_skybox_button_index(menu: VBoxContainer) -> int:
+    for index in range(menu.get_child_count()):
+        var child := menu.get_child(index)
+        if child is Button and "Skybox" in (child as Button).text:
+            return index
+    return menu.get_child_count()
 
 
 func _show_save_dialog() -> void:
