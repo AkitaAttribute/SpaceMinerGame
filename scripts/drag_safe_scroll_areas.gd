@@ -257,7 +257,7 @@ func _restore_suppressed_button_pointer_input() -> void:
         var button := button_value as BaseButton
         button.mouse_filter = int(
             record.get("mouse_filter", Control.MOUSE_FILTER_STOP)
-        ) as Control.MouseFilter
+        )
 
     _suppressed_button_filters.clear()
 
