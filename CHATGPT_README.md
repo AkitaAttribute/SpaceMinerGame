@@ -218,7 +218,6 @@ The row shows:
 - the color-region name,
 - a compact square swatch on the right,
 - **no hex text in the drawer**.
-
 The compact swatch uses the same visual styling as the popup color squares, scaled down for the drawer.
 
 Clicking a color-region row opens a separate popup.
@@ -438,7 +437,6 @@ Focus changes were also handled to prevent stuck capture state.
 ---
 
 ## 7. Ship collision: current implementation
-
 The user explicitly rejected one large bounding box around the ship’s grid extents.
 
 The current implementation builds moving ship collision from the **actual rendered procedural meshes**:
@@ -658,7 +656,6 @@ If performance still needs work, prefer:
 ## 11. SpaceAsteroid architecture
 
 Asteroids are logical voxel volumes, but they are **not** rendered as thousands of cube nodes.
-
 A `SpaceAsteroid` uses:
 
 - logical cell occupancy,
@@ -878,7 +875,6 @@ Each laser draws range geometry around its builder-cell origin/support volume co
 `scripts/app_logger.gd` installs a logger that tries to write beside the executable:
 
 `SpaceMinerGame.log`
-
 If that fails, it falls back to `user://SpaceMinerGame.log`.
 
 The logger flushes aggressively so breadcrumbs survive hard crashes.
@@ -1233,3 +1229,34 @@ Runtime behavior:
 - there are no live distant-star or nebula objects to move, rotate, or flicker
 - selecting Black Background disables the panorama and uses a black environment
 - changing the active generated sky reloads the static panorama immediately
+
+---
+
+## 24. Scrollable UI standard
+
+All scrollable UI should use the project-wide reusable behavior in
+`scripts/drag_safe_scroll_areas.gd`, autoloaded as `DragSafeScrollAreas`.
+
+Rules for new and existing scroll areas:
+
+- Use a normal Godot `ScrollContainer`; `DragSafeScrollAreas` automatically
+  registers every `ScrollContainer` added to the scene tree.
+- Do not add new per-screen `gui_input` drag implementations for buttons inside
+  scroll areas. The reusable helper owns the button-drag cancellation behavior.
+- A press on a button remains a normal click until pointer movement exceeds the
+  drag threshold. After that threshold, the gesture becomes scrolling.
+- Once a button gesture becomes a drag, that button is temporarily disabled so
+  releasing the drag cannot emit `pressed`. It is restored only after release,
+  which guarantees that a distinct later press is required to activate it.
+- This behavior applies to both mouse and touch input and supports horizontal or
+  vertical `ScrollContainer` modes.
+- Dynamically created scroll containers are picked up through the SceneTree
+  `node_added` signal. `DragSafeScrollAreas.register_scroll_area(scroll)` is
+  also available for explicit registration when useful.
+- The flight menu is wrapped in a vertical `ScrollContainer` by this reusable
+  helper so Debug/settings content remains reachable on smaller displays.
+
+The original parts selector had bespoke horizontal drag state in `main.gd` and
+was the notable failure case: dragging from a part button could still activate
+that button on release. Do not copy that pattern into new UI. Use the reusable
+scroll behavior instead.
