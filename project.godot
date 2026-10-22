@@ -4,11 +4,13 @@ config_version=5
 
 [application]
 config/name="Space Miner"
+config/version="0.1.0"
 run/main_scene="res://main.tscn"
 run/flush_stdout_on_print=true
 run/max_fps=60
 
 [autoload]
+UpdateManager="*res://scripts/update_manager.gd"
 AppLogger="*res://scripts/app_logger.gd"
 DragSafeScrollAreas="*res://scripts/drag_safe_scroll_areas.gd"
 MobileLogExporter="*res://scripts/mobile_log_exporter.gd"
