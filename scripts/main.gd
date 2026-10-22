@@ -1197,8 +1197,8 @@ func _build_menu_overlay() -> void:
 
     menu_panel = PanelContainer.new()
     menu_panel.set_anchors_preset(Control.PRESET_CENTER)
-    menu_panel.position = Vector2(-240.0, -250.0)
-    menu_panel.size = Vector2(480.0, 500.0)
+    menu_panel.position = Vector2(-240.0, -300.0)
+    menu_panel.size = Vector2(480.0, 600.0)
     menu_panel.visible = false
     ui_root.add_child(menu_panel)
 
@@ -1457,6 +1457,17 @@ func _show_root_menu() -> void:
         button.custom_minimum_size = Vector2(0.0, 56.0)
         button.pressed.connect(_root_menu_action.bind(spec[1]))
         menu_content.add_child(button)
+
+    # Use the updater already embedded in installed APKs. Newly introduced
+    # updater methods would not exist until another APK installation.
+    menu_content.add_spacer(false)
+    var version_label := Label.new()
+    var current_build := maxi(0, int(UpdateManager.get("_current_build")))
+    version_label.text = "Version 0.1.%d (PR preview)" % current_build
+    version_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    version_label.modulate.a = 0.65
+    version_label.add_theme_font_size_override("font_size", 14)
+    menu_content.add_child(version_label)
 
 func _root_menu_action(action: String) -> void:
     match action:
