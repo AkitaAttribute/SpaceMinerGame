@@ -1098,6 +1098,15 @@ func _open_menu() -> void:
         button.pressed.connect(_flight_menu_action.bind(spec[1]))
         menu_content.add_child(button)
 
+    menu_content.add_spacer(false)
+    var version_label := Label.new()
+    var current_build := maxi(0, int(UpdateManager.get("_current_build")))
+    version_label.text = "Version 0.1.%d (PR preview)" % current_build
+    version_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    version_label.modulate.a = 0.65
+    version_label.add_theme_font_size_override("font_size", 14)
+    menu_content.add_child(version_label)
+
 
 func _show_flight_controls_menu() -> void:
     for child in menu_content.get_children():
