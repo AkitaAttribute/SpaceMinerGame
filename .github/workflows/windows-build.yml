@@ -76,6 +76,8 @@ jobs:
 
   build-windows:
     needs: build-custom-windows-template
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -121,6 +123,24 @@ jobs:
           cp custom-template/windows_release_x86_64.exe "$template_dir/windows_release_x86_64.exe"
           cp custom-template/windows_release_x86_64_console.exe "$template_dir/windows_release_x86_64_console.exe"
           ls -lh "$template_dir/windows_release_x86_64"*.exe
+
+      - name: Stamp embedded PR preview build number
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("project.godot")
+          old = 'config/version="0.1.0"'
+          new = 'config/version="0.1.%s"' % os.environ["GITHUB_RUN_NUMBER"]
+          data = path.read_text(encoding="utf-8")
+          if old not in data:
+              raise RuntimeError("Missing embedded version setting.")
+          path.write_text(data.replace(old, new, 1), encoding="utf-8")
+          print(new)
+          PY
 
       - name: Import and compile project
         shell: bash
@@ -260,3 +280,70 @@ jobs:
           path: build/SpaceMinerGame-Android.apk
           if-no-files-found: error
           retention-days: 14
+
+      # The normal Actions artifacts require GitHub authentication. Publish
+      # downloadable resource packs and a small version manifest as release
+      # assets so the installed Android/Windows game can check anonymously.
+      - name: Export resource packs for in-place updates
+        shell: bash
+        run: |
+          set -euo pipefail
+          godot --headless --path . --export-pack "Windows Desktop" build/SpaceMinerGame-Windows.pck
+          godot --headless --path . --export-pack "Android" build/SpaceMinerGame-Android.pck
+          test -s build/SpaceMinerGame-Windows.pck
+          test -s build/SpaceMinerGame-Android.pck
+          ls -lh build/*.pck
+
+      - name: Create PR preview update manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          base = "https://github.com/AkitaAttribute/SpaceMinerGame/releases/download/pr-1-preview"
+          build_dir = Path("build")
+          manifest = {
+              "channel": "pr-1",
+              "build": int(os.environ["GITHUB_RUN_NUMBER"]),
+              "commit": os.environ["GITHUB_SHA"],
+          }
+          for platform, filename in [
+              ("windows", "SpaceMinerGame-Windows.pck"),
+              ("android", "SpaceMinerGame-Android.pck"),
+          ]:
+              path = build_dir / filename
+              manifest[platform] = {
+                  "url": f"{base}/{filename}",
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  "bytes": path.stat().st_size,
+              }
+          (build_dir / "manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(manifest, indent=2))
+          PY
+
+      - name: Publish public PR preview resource packs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=pr-1-preview
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --prerelease \
+              --title "Space Miner PR #1 Preview Updates" \
+              --notes "Automatically refreshed Godot resource packs for the open development PR. Install the current Windows or Android build once to enable in-app patches."
+          fi
+          gh release upload "$tag" \
+            build/SpaceMinerGame-Windows.pck \
+            build/SpaceMinerGame-Android.pck \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          # Upload the manifest last, only once both downloadable packs exist.
+          gh release upload "$tag" build/manifest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
