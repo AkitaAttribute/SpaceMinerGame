@@ -152,9 +152,12 @@ func _begin_download() -> void:
     if err != OK:
         _show_notice("Could not begin the download (%d)." % err)
         return
+    _notice_dialog.dialog_text = "Downloading PR preview build %d...\\nKeep Space Miner open until the download completes." % _available_build
+    _notice_dialog.popup_centered(Vector2i(510, 180))
     print("Space Miner: downloading preview build ", _available_build)
 
 func _on_pack_received(result: int, response_code: int, _headers: PackedStringArray, _body: PackedByteArray) -> void:
+    _notice_dialog.hide()
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         _show_notice("Update download failed (%d / HTTP %d)." % [result, response_code])
         return
