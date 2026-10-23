@@ -63,6 +63,13 @@ class BufferedLogger extends Logger:
         )
         _mutex.unlock()
 
+    func snapshot() -> String:
+        _mutex.lock()
+        var text := "\n".join(_records) + "\n"
+        _mutex.unlock()
+        return text
+
+
     func write_to_file(path: String) -> bool:
         var file := FileAccess.open(path, FileAccess.WRITE)
         if file == null:
@@ -133,6 +140,106 @@ func export_buffered_log(path: String) -> bool:
 
     return success
 
+
+
+
+# Only the upload copy is sanitized. The existing downloaded/shutdown log
+# remains complete for local diagnosis.
+func sanitized_upload_snapshot() -> String:
+    if _engine_logger == null:
+        return ""
+    _engine_logger.write_event("Public-safe diagnostic log upload requested.")
+    var content := _engine_logger.snapshot()
+
+    # Replace user-defined ship names before generic patterns. Only stored names
+    # (rather than internal part names, IDs, coordinates or timings) are removed.
+    for model in ShipStore.list_models():
+        var ship_name := str(model.get("name", "")).strip_edges()
+        if not ship_name.is_empty():
+            content = content.replace(ship_name, "[ship name]")
+
+    # Some engine log lines include the device/account identity without labels.
+    for key in ["COMPUTERNAME", "HOSTNAME", "USERNAME", "USER", "LOGNAME"]:
+        if not OS.has_environment(key):
+            continue
+        var value := OS.get_environment(key).strip_edges()
+        if value.length() >= 3:
+            content = content.replace(value, "[device/user]")
+
+    # These header fields are absolute device paths. Keep engine version,
+    # timestamps, error levels and source script line numbers unmodified.
+    content = _redact_upload_pattern(
+        content, "(?m)^(Executable|Log):[^\\r\\n]*", "$1: [local path]"
+    )
+    # Explicit free-text fields and JSON fields that may contain user input.
+    content = _redact_upload_pattern(
+        content,
+        "(?i)\\b(?:ship[_ ]?name|model[_ ]?name|device[_ ]?name|"
+        + "host[_ ]?name|computer[_ ]?name|user[_ ]?name|player[_ ]?name)"
+        + "\\s*[:=]\\s*[^\\r\\n,;]+",
+        "[private name]"
+    )
+    content = _redact_upload_pattern(
+        content,
+        "(?i)\\\"(?:name|ship_name|device_name|hostname|username)\\\""
+        + "\\s*:\\s*\\\"[^\\\"\\r\\n]*\\\"",
+        "\"name\":\"[private name]\""
+    )
+
+    # HTTP URLs without queries (including the public updater) are useful.
+    # URLs containing query data and credential-looking assignments are not.
+    content = _redact_upload_pattern(
+        content, "https?://[^\\s\\r\\n]+\\?[^\\s\\r\\n]+",
+        "[URL with query omitted]"
+    )
+    content = _redact_upload_pattern(
+        content,
+        "(?i)\\b(?:authorization|bearer|password|passwd|secret|"
+        + "api[_-]?key|access[_-]?token|refresh[_-]?token)"
+        + "\\s*[:= ]\\s*[^\\s,;]+",
+        "[credential]"
+    )
+
+    # Generated error stacks may expose home directories, Android content
+    # providers and system paths. Keep res:// script references intact.
+    content = _redact_upload_pattern(
+        content, "(?i)content://[^\\r\\n]+", "[local URI]"
+    )
+    content = _redact_upload_pattern(
+        content, "(?i)[A-Z]:[\\\\/][^\\r\\n]+", "[local path]"
+    )
+    content = _redact_upload_pattern(
+        content,
+        "(?i)(?:/home/|/Users/|/data/|/storage/|/sdcard/|"
+        + "/private/|/var/|/tmp/|/run/user/)[^\\r\\n]+",
+        "[local path]"
+    )
+
+    content = _redact_upload_pattern(
+        content,
+        "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
+        "[email]"
+    )
+    content = _redact_upload_pattern(
+        content, "(?i)\\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\\b",
+        "[MAC address]"
+    )
+    content = _redact_upload_pattern(
+        content, "\\b(?:[0-9]{1,3}\\.){3}[0-9]{1,3}\\b",
+        "[IP address]"
+    )
+    return content
+
+
+func _redact_upload_pattern(
+    text: String, pattern: String, replacement: String
+) -> String:
+    var expression := RegEx.new()
+    if expression.compile(pattern) != OK:
+        # Fail closed instead of silently uploading text with a broken filter.
+        push_error("Diagnostic upload sanitization pattern failed to compile.")
+        return "[Diagnostic log redacted: sanitization error]\n"
+    return expression.sub(text, replacement, true)
 
 func _write_buffered_log() -> void:
     if _engine_logger == null:
