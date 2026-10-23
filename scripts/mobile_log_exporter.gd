@@ -2,7 +2,10 @@ extends Node
 
 # Mobile Debug menu: local download plus a sanitized anonymous paste upload.
 # Keep the existing download control at its current point in the menu.
-const PASTE_URL := "https://paste.rs/"
+# Use a documented anonymous API first; paste.rs remains a fallback.
+const DPASTE_URL := "https://dpaste.org/api/"
+const PASTE_RS_URL := "https://paste.rs/"
+const DPASTE_EXPIRY_SECONDS := 604800
 const MAX_UPLOAD_BYTES := 512 * 1024
 
 var _button: Button
@@ -12,6 +15,9 @@ var _status_label: Label
 var _debug_menu_id := 0
 var _upload_http: HTTPRequest
 var _uploading := false
+var _upload_payload := ""
+var _active_provider := ""
+var _first_failure := ""
 var _last_uploaded_url := ""
 var _status_text := "Save a complete local log, or upload a sanitized copy."
 
@@ -20,7 +26,7 @@ func _ready() -> void:
     process_mode = Node.PROCESS_MODE_ALWAYS
     _upload_http = HTTPRequest.new()
     _upload_http.use_threads = true
-    _upload_http.timeout = 30.0
+    _upload_http.timeout = 15.0
     add_child(_upload_http)
     _upload_http.request_completed.connect(_on_upload_completed)
     set_process(_is_mobile_platform())
@@ -166,13 +172,7 @@ func _inject_export_controls(menu: VBoxContainer) -> void:
 
 
 func _refresh_buttons() -> void:
-    if _upload_button != null and is_instance_valid(_upload_button):
-        _upload_button.disabled = _uploading
-    if _copy_button != null and is_instance_valid(_copy_button):
-        _copy_button.disabled = _last_uploaded_url.is_empty()
-
-
-func _upload_logs() -> void:
+    if _ufunc _upload_logs() -> void:
     if _uploading:
         return
     var payload := AppLogger.sanitized_upload_snapshot()
@@ -183,48 +183,116 @@ func _upload_logs() -> void:
         _set_status("Log exceeds 512 KB; download it locally instead.")
         return
 
+    # Take one sanitized snapshot for the whole attempt. A fallback should not
+    # inadvertently add new user data or silently change the diagnostic period.
+    _upload_payload = payload
+    _first_failure = ""
     _uploading = true
     _refresh_buttons()
-    _set_status("Uploading sanitized log…")
+    _start_upload("dpaste.org")
+
+
+func _start_upload(provider: String) -> void:
+    _active_provider = provider
+    var url := DPASTE_URL
+    var headers := PackedStringArray()
+    var request_body := _upload_payload
+    if provider == "dpaste.org":
+        # dpaste.org/api/ accepts anonymous application/x-www-form-urlencoded
+        # posts. format=url returns the snippet URL as plain text.
+        request_body = (
+            "content=" + _upload_payload.uri_encode()
+            + "&format=url&expires=%d&lexer=text" % DPASTE_EXPIRY_SECONDS
+        )
+        headers = PackedStringArray([
+            "Content-Type: application/x-www-form-urlencoded; charset=utf-8",
+            "User-Agent: SpaceMinerGame/0.1 (diagnostic upload)",
+        ])
+    else:
+        url = PASTE_RS_URL
+        headers = PackedStringArray([
+            "Content-Type: text/plain; charset=utf-8",
+            "User-Agent: SpaceMinerGame/0.1 (diagnostic upload)",
+        ])
+
+    _set_status("Uploading sanitized log to " + provider + "…")
+    AppLogger.event(
+        "LOG_UPLOAD starting provider=%s source_bytes=%d." %
+        [provider, _upload_payload.to_utf8_buffer().size()]
+    )
     var error := _upload_http.request(
-        PASTE_URL,
-        PackedStringArray(["Content-Type: text/plain; charset=utf-8"]),
-        HTTPClient.METHOD_POST,
-        payload
+        url, headers, HTTPClient.METHOD_POST, request_body
     )
     if error != OK:
-        _uploading = false
-        _refresh_buttons()
-        _set_status("Unable to start upload (error %d)." % error)
-        AppLogger.event("LOG_UPLOAD failed to begin; error=%d." % error)
+        _upload_failed("request could not start; error=%d" % error)
 
 
 func _on_upload_completed(
     result: int, response_code: int, _headers: PackedStringArray,
     body: PackedByteArray
 ) -> void:
-    _uploading = false
-    _refresh_buttons()
+    if not _uploading:
+        return
 
-    if result != HTTPRequest.RESULT_SUCCESS or response_code != 201:
-        if response_code == 206:
-            _set_status("Upload rejected: server accepted only part of the log.")
-        else:
-            _set_status("Upload failed (network %d, HTTP %d)." % [result, response_code])
-        AppLogger.event(
-            "LOG_UPLOAD failed; network=%d http=%d." % [result, response_code]
-        )
+    var expected_response := (
+        (result == HTTPRequest.RESULT_SUCCESS and response_code == 200)
+        if _active_provider == "dpaste.org"
+        else (result == HTTPRequest.RESULT_SUCCESS and response_code == 201)
+    )
+    if not expected_response:
+        _upload_failed("network=%d HTTP=%d" % [result, response_code])
         return
 
     var url := body.get_string_from_utf8().strip_edges()
+    var allowed_pattern := (
+        "^https://dpaste\\.org/[A-Za-z0-9]+/?$"
+        if _active_provider == "dpaste.org"
+        else "^https://paste\\.rs/[A-Za-z0-9_-]+/?$"
+    )
     var url_regex := RegEx.new()
     if (
-        url_regex.compile("^https://paste\\.rs/[A-Za-z0-9_-]+$") != OK
+        url_regex.compile(allowed_pattern) != OK
         or url_regex.search(url) == null
     ):
-        _set_status("Upload response did not contain a valid paste.rs URL.")
-        AppLogger.event("LOG_UPLOAD invalid response URL.")
+        _upload_failed("invalid URL response")
         return
+
+    var successful_provider := _active_provider
+    _uploading = false
+    _upload_payload = ""
+    _active_provider = ""
+    _first_failure = ""
+    _last_uploaded_url = url
+    _refresh_buttons()
+    DisplayServer.clipboard_set(_last_uploaded_url)
+    _set_status("Uploaded and link copied: " + _last_uploaded_url)
+    AppLogger.event("LOG_UPLOAD completed provider=%s." % successful_provider)
+
+
+func _upload_failed(reason: String) -> void:
+    # Retry with the original sanitized snapshot if the primary paste service
+    # is down. Only local error codes/provider names are included in logs.
+    var failed_provider := _active_provider
+    AppLogger.event(
+        "LOG_UPLOAD failed provider=%s; %s." % [failed_provider, reason]
+    )
+    if failed_provider == "dpaste.org":
+        _first_failure = reason
+        _set_status("dpaste.org failed; trying paste.rs…")
+        _start_upload("paste.rs")
+        return
+
+    _uploading = false
+    _upload_payload = ""
+    _active_provider = ""
+    _refresh_buttons()
+    _set_status(
+        "Upload failed (dpaste.org: %s; paste.rs: %s)."
+        % [_first_failure, reason]
+    )
+
+
+n
 
     _last_uploaded_url = url
     _refresh_buttons()
