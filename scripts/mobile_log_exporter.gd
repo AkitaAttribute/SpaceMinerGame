@@ -7,7 +7,7 @@ extends Node
 const PASTEBIN_AI_URL := "https://pastebin.ai/api/v1/pastes"
 const PSTE_URL := "https://pste.us/api/"
 const PSTE_EXPIRY_SECONDS := 604800
-const MAX_UPLOAD_BYTES := 512 * 1024
+const MAX_UPLOAD_BYTES := 500 * 1024
 
 var _button: Button
 var _upload_button: Button
@@ -182,13 +182,19 @@ func _refresh_buttons() -> void:
 func _upload_logs() -> void:
     if _uploading:
         return
-    var payload := AppLogger.sanitized_upload_snapshot()
-    if payload.is_empty():
+    # The full diagnostic buffer stays intact for Download Logs and shutdown.
+    # Sanitize first, then select only the newest 500 KiB at upload time.
+    var sanitized := AppLogger.sanitized_upload_snapshot()
+    if sanitized.is_empty():
         _set_status("No diagnostic log is available to upload.")
         return
-    if payload.to_utf8_buffer().size() > MAX_UPLOAD_BYTES:
-        _set_status("Log exceeds 512 KB; download it locally instead.")
-        return
+    var payload := _recent_upload_window(sanitized)
+    var original_bytes := sanitized.to_utf8_buffer().size()
+    if original_bytes > MAX_UPLOAD_BYTES:
+        AppLogger.event(
+            "LOG_UPLOAD trimmed old diagnostics: original_bytes=%d upload_bytes=%d." %
+            [original_bytes, payload.to_utf8_buffer().size()]
+        )
 
     # One sanitized snapshot is reused if the first provider rejects the POST.
     # Retaining the last successful link is independent of retry attempts.
@@ -197,6 +203,34 @@ func _upload_logs() -> void:
     _uploading = true
     _refresh_buttons()
     _start_upload("pastebin.ai")
+
+
+# Trim only the uploaded snapshot. Preserve whole entries whenever possible,
+# leaving a short notice within the 500 KiB budget. If a single log entry is
+# longer than the budget, retain its UTF-8-safe tail instead.
+func _recent_upload_window(content: String) -> String:
+    var utf8 := content.to_utf8_buffer()
+    if utf8.size() <= MAX_UPLOAD_BYTES:
+        return content
+
+    var notice := "[SpaceMinerGame: older log content omitted (500 KiB upload limit)]\n"
+    var available := MAX_UPLOAD_BYTES - notice.to_utf8_buffer().size()
+    var cut := utf8.size() - available
+    var line_cut := cut
+
+    # Prefer the first newline after the byte cutoff so the upload begins at
+    # a complete diagnostic record rather than partway through one.
+    while line_cut < utf8.size() and utf8[line_cut] != 10:
+        line_cut += 1
+    if line_cut < utf8.size() - 1:
+        cut = line_cut + 1
+    else:
+        # A single giant final record consumes the entire window. Keep its
+        # latest bytes, starting on a UTF-8 codepoint boundary.
+        while cut < utf8.size() and (int(utf8[cut]) & 0xC0) == 0x80:
+            cut += 1
+
+    return notice + utf8.slice(cut).get_string_from_utf8()
 
 
 func _start_upload(provider: String) -> void:
