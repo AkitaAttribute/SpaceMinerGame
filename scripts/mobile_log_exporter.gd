@@ -172,7 +172,13 @@ func _inject_export_controls(menu: VBoxContainer) -> void:
 
 
 func _refresh_buttons() -> void:
-    if _ufunc _upload_logs() -> void:
+    if _upload_button != null and is_instance_valid(_upload_button):
+        _upload_button.disabled = _uploading
+    if _copy_button != null and is_instance_valid(_copy_button):
+        _copy_button.disabled = _last_uploaded_url.is_empty()
+
+
+func _upload_logs() -> void:
     if _uploading:
         return
     var payload := AppLogger.sanitized_upload_snapshot()
@@ -290,15 +296,6 @@ func _upload_failed(reason: String) -> void:
         "Upload failed (dpaste.org: %s; paste.rs: %s)."
         % [_first_failure, reason]
     )
-
-
-n
-
-    _last_uploaded_url = url
-    _refresh_buttons()
-    DisplayServer.clipboard_set(_last_uploaded_url)
-    _set_status("Uploaded and link copied: " + _last_uploaded_url)
-    AppLogger.event("LOG_UPLOAD completed successfully.")
 
 
 func _copy_last_link() -> void:
