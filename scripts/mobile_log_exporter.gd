@@ -2,10 +2,11 @@ extends Node
 
 # Mobile Debug menu: local download plus a sanitized anonymous paste upload.
 # Keep the existing download control at its current point in the menu.
-# Use a documented anonymous API first; paste.rs remains a fallback.
-const DPASTE_URL := "https://dpaste.org/api/"
-const PASTE_RS_URL := "https://paste.rs/"
-const DPASTE_EXPIRY_SECONDS := 604800
+# Both providers document keyless, anonymous POST APIs. Avoid the services
+# that refused the last real-device upload (dpaste.org 403, paste.rs 500).
+const PASTEBIN_AI_URL := "https://pastebin.ai/api/v1/pastes"
+const PSTE_URL := "https://pste.us/api/"
+const PSTE_EXPIRY_SECONDS := 604800
 const MAX_UPLOAD_BYTES := 512 * 1024
 
 var _button: Button
@@ -189,36 +190,46 @@ func _upload_logs() -> void:
         _set_status("Log exceeds 512 KB; download it locally instead.")
         return
 
-    # Take one sanitized snapshot for the whole attempt. A fallback should not
-    # inadvertently add new user data or silently change the diagnostic period.
+    # One sanitized snapshot is reused if the first provider rejects the POST.
+    # Retaining the last successful link is independent of retry attempts.
     _upload_payload = payload
     _first_failure = ""
     _uploading = true
     _refresh_buttons()
-    _start_upload("dpaste.org")
+    _start_upload("pastebin.ai")
 
 
 func _start_upload(provider: String) -> void:
     _active_provider = provider
-    var url := DPASTE_URL
+    var url := PASTEBIN_AI_URL
     var headers := PackedStringArray()
-    var request_body := _upload_payload
-    if provider == "dpaste.org":
-        # dpaste.org/api/ accepts anonymous application/x-www-form-urlencoded
-        # posts. format=url returns the snippet URL as plain text.
+    var request_body := ""
+    if provider == "pastebin.ai":
+        # Documented anonymous API: JSON, unlisted visibility and 1-week expiry.
+        request_body = JSON.stringify({
+            "content": _upload_payload,
+            "title": "SpaceMinerGame Diagnostic Log",
+            "language": "plaintext",
+            "visibility": "unlisted",
+            "expiration": "1w",
+            "category": "logs",
+        })
+        headers = PackedStringArray([
+            "Content-Type: application/json",
+            "Accept: application/json",
+            "User-Agent: SpaceMinerGame/0.1",
+        ])
+    else:
+        # pste.us documents a keyless dpaste-compatible API returning a bare
+        # URL. Its 10 MB cap exceeds our own 512 KB safeguard.
+        url = PSTE_URL
         request_body = (
             "content=" + _upload_payload.uri_encode()
-            + "&format=url&expires=%d&lexer=text" % DPASTE_EXPIRY_SECONDS
+            + "&format=url&expires=%d&lexer=text" % PSTE_EXPIRY_SECONDS
         )
         headers = PackedStringArray([
             "Content-Type: application/x-www-form-urlencoded; charset=utf-8",
-            "User-Agent: SpaceMinerGame/0.1 (diagnostic upload)",
-        ])
-    else:
-        url = PASTE_RS_URL
-        headers = PackedStringArray([
-            "Content-Type: text/plain; charset=utf-8",
-            "User-Agent: SpaceMinerGame/0.1 (diagnostic upload)",
+            "User-Agent: SpaceMinerGame/0.1",
         ])
 
     _set_status("Uploading sanitized log to " + provider + "…")
@@ -240,20 +251,31 @@ func _on_upload_completed(
     if not _uploading:
         return
 
-    var expected_response := (
-        (result == HTTPRequest.RESULT_SUCCESS and response_code == 200)
-        if _active_provider == "dpaste.org"
-        else (result == HTTPRequest.RESULT_SUCCESS and response_code == 201)
-    )
-    if not expected_response:
+    if (
+        result != HTTPRequest.RESULT_SUCCESS
+        or response_code not in [200, 201]
+    ):
         _upload_failed("network=%d HTTP=%d" % [result, response_code])
         return
 
-    var url := body.get_string_from_utf8().strip_edges()
+    var url := ""
+    if _active_provider == "pastebin.ai":
+        var parsed = JSON.parse_string(body.get_string_from_utf8())
+        if parsed is Dictionary:
+            url = str((parsed as Dictionary).get("url", "")).strip_edges()
+    else:
+        url = body.get_string_from_utf8().strip_edges()
+        # Support a JSON response even if the compatibility server changes
+        # its default while retaining the same documented endpoint.
+        if url.begins_with("{"):
+            var parsed = JSON.parse_string(url)
+            if parsed is Dictionary:
+                url = str((parsed as Dictionary).get("url", "")).strip_edges()
+
     var allowed_pattern := (
-        "^https://dpaste\\.org/[A-Za-z0-9]+/?$"
-        if _active_provider == "dpaste.org"
-        else "^https://paste\\.rs/[A-Za-z0-9_-]+/?$"
+        "^https://pastebin\\.ai/p/[A-Za-z0-9_-]+/?$"
+        if _active_provider == "pastebin.ai"
+        else "^https://pste\\.us/(?:[A-Za-z0-9_-]+/){0,2}[A-Za-z0-9_-]+/?$"
     )
     var url_regex := RegEx.new()
     if (
@@ -276,16 +298,14 @@ func _on_upload_completed(
 
 
 func _upload_failed(reason: String) -> void:
-    # Retry with the original sanitized snapshot if the primary paste service
-    # is down. Only local error codes/provider names are included in logs.
     var failed_provider := _active_provider
     AppLogger.event(
         "LOG_UPLOAD failed provider=%s; %s." % [failed_provider, reason]
     )
-    if failed_provider == "dpaste.org":
+    if failed_provider == "pastebin.ai":
         _first_failure = reason
-        _set_status("dpaste.org failed; trying paste.rs…")
-        _start_upload("paste.rs")
+        _set_status("pastebin.ai failed; trying pste.us…")
+        _start_upload("pste.us")
         return
 
     _uploading = false
@@ -293,7 +313,7 @@ func _upload_failed(reason: String) -> void:
     _active_provider = ""
     _refresh_buttons()
     _set_status(
-        "Upload failed (dpaste.org: %s; paste.rs: %s)."
+        "Upload failed (pastebin.ai: %s; pste.us: %s)."
         % [_first_failure, reason]
     )
 
