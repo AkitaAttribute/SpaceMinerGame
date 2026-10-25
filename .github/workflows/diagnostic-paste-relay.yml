@@ -1,6 +1,10 @@
 name: SpaceMinerGame Diagnostic Log Relay
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - diagnostics/paste-relay-request.json
   issues:
     types: [opened]
 
@@ -9,10 +13,11 @@ permissions:
 
 jobs:
   read-paste:
-    if: github.event.issue.user.login == 'AkitaAttribute' && startsWith(github.event.issue.title, '[SpaceMinerGame Log Relay]')
+    if: github.event_name == 'push' || (github.event.issue.user.login == 'AkitaAttribute' && startsWith(github.event.issue.title, '[SpaceMinerGame Log Relay]'))
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      - uses: actions/checkout@v4
       - name: Fetch pastebin.ai diagnostic log
         shell: bash
         run: |
@@ -22,7 +27,10 @@ jobs:
           from pathlib import Path
 
           event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-          body = (event["issue"].get("body") or "").strip()
+          if os.environ["GITHUB_EVENT_NAME"] == "push":
+              body = json.loads(Path("diagnostics/paste-relay-request.json").read_text())["url"].strip()
+          else:
+              body = (event["issue"].get("body") or "").strip()
           match = re.fullmatch(r"https://pastebin\.ai/p/([a-zA-Z0-9_-]{4,80})/?", body)
           if not match:
               raise SystemExit("Issue body must contain only a pastebin.ai/p/<id> URL")
