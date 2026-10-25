@@ -1,0 +1,39 @@
+name: SpaceMinerGame Diagnostic Log Relay
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  read-paste:
+    if: github.event.issue.user.login == 'AkitaAttribute' && startsWith(github.event.issue.title, '[SpaceMinerGame Log Relay]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Fetch pastebin.ai diagnostic log
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          import urllib.request
+          from pathlib import Path
+
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          body = (event["issue"].get("body") or "").strip()
+          match = re.fullmatch(r"https://pastebin\.ai/p/([a-zA-Z0-9_-]{4,80})/?", body)
+          if not match:
+              raise SystemExit("Issue body must contain only a pastebin.ai/p/<id> URL")
+          paste_id = match.group(1)
+          url = "https://pastebin.ai/raw/" + paste_id
+          request = urllib.request.Request(url, headers={"User-Agent":"SpaceMinerGame-Log-Relay/1.0"})
+          with urllib.request.urlopen(request, timeout=30) as response:
+              content = response.read(512001)
+          if not content or len(content) > 512000:
+              raise SystemExit("Paste is empty or exceeds 500 KiB")
+          print("=== SPACE_MINER_DIAGNOSTIC_BEGIN ===", flush=True)
+          print(content.decode("utf-8", errors="replace"), flush=True)
+          print("=== SPACE_MINER_DIAGNOSTIC_END ===", flush=True)
+          PY
