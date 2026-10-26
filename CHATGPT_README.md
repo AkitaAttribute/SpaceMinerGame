@@ -1260,3 +1260,56 @@ The original parts selector had bespoke horizontal drag state in `main.gd` and
 was the notable failure case: dragging from a part button could still activate
 that button on release. Do not copy that pattern into new UI. Use the reusable
 scroll behavior instead.
+
+
+---
+
+## 25. Diagnostic paste relay: preserve the chat attachment before GitHub cleanup
+
+When a user sends a SpaceMinerGame diagnostic paste URL (for example,
+https://pastebin.ai/p/<id>), use the GitHub Actions relay on the repository's
+**main** branch to retrieve the raw diagnostic text. Relevant files:
+
+- .github/workflows/diagnostic-paste-relay.yml: retrieves the paste into
+  Actions logs when diagnostics/paste-relay-request.json is updated.
+- .github/workflows/diagnostic-paste-cleanup.yml: deletes the logs for a
+  **completed** diagnostic relay run when diagnostics/relay-cleanup-request.json
+  is updated with that run_id.
+- diagnostics/paste-relay-request.json: the active paste URL; clear its current
+  value after review and cleanup (note that earlier commits may retain URLs).
+- The game sanitizes the outbound log and trims it to the most recent 500 KiB.
+  The Download Logs option still saves the full local log.
+
+**Mandatory process, in order, for EVERY diagnostic paste:**
+
+1. Trigger the relay for the pasted URL. Wait until its Actions run completes.
+   Retrieve the job logs using the GitHub connector; extract the **entire**
+   diagnostic between the SPACE_MINER_DIAGNOSTIC_BEGIN and
+   SPACE_MINER_DIAGNOSTIC_END markers. Exclude runner timestamps, workflow
+   script echoes, and other wrapping text. Check for truncation.
+2. **Before deleting anything from GitHub**, write the complete extracted
+   diagnostic text to an actual UTF-8 .log or .txt file in the current chat's
+   working directory (for example, under /mnt/data/). Preserve all diagnostic
+   entries, line breaks, and useful formatting; a summary is NOT a substitute.
+3. Verify the real file exists and check its length/content against the
+   extracted log. If retrieval is incomplete, file creation fails, or the file
+   cannot be verified, **do not delete the GitHub logs**. Explain the blocker.
+4. Analyze the log and provide the results in the chat. **Include a clickable
+   sandbox download link to the verified, complete log file in the SAME
+   response as the diagnostic analysis.** The user must receive a full copy
+   in this chat, not only a summary. Use the real filesystem path; never
+   invent a sandbox path or claim an attachment exists without verification.
+5. After creating and verifying that complete chat-side file, trigger the
+   cleanup workflow using the completed relay's run_id. Verify that deletion
+   worked (e.g., the previous GitHub job-log fetch returns HTTP 404). Clear
+   the active paste URL in the current request file. Report the cleanup
+   result; if it fails, disclose that clearly.
+6. **Do not rely on ChatGPT memory to permanently retain a verbatim 500 KiB
+   file.** Keep the complete file attached in the conversation and summarize
+   only relevant findings in chat context.
+
+The complete file must be created **before** GitHub deletion, and its download
+link must be relayed to the user **along with the response to the log**.
+GitHub Actions cleanup does not delete the original Pastebin.ai paste or
+rewrite historical Git commits.
+
