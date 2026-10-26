@@ -44,7 +44,15 @@ jobs:
               content = response.read(512001)
           if not content or len(content) > 512000:
               raise SystemExit("Paste is empty or exceeds 500 KiB")
+          Path("sanitized-diagnostic.log").write_bytes(content)
           print("=== SPACE_MINER_DIAGNOSTIC_BEGIN ===", flush=True)
           print(content.decode("utf-8", errors="replace"), flush=True)
           print("=== SPACE_MINER_DIAGNOSTIC_END ===", flush=True)
           PY
+      - name: Preserve complete diagnostic as downloadable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitized-space-miner-diagnostic
+          path: sanitized-diagnostic.log
+          retention-days: 1
+          if-no-files-found: error
