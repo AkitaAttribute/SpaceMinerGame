@@ -27,6 +27,7 @@ const EFFECT_HOLOGRAPHIC := 3
 const EFFECT_INVERSE := 4
 const EFFECT_COUNT := 5
 const CELL_SIZE := 1.0
+const INITIAL_ASTEROIDS_PER_FRAME := 12
 
 const FACE_DIRECTIONS: Array[Vector3i] = [
     Vector3i(1, 0, 0),
@@ -39,6 +40,7 @@ const FACE_DIRECTIONS: Array[Vector3i] = [
 
 var _scene_id := 0
 var _initial_patch_complete := false
+var _initial_patch_index := 0
 var _asteroid_effect_maps: Dictionary = {}
 var _asteroid_geometry_versions: Dictionary = {}
 var _patched_chunks: Dictionary = {}
@@ -67,6 +69,7 @@ func _ready() -> void:
 
 func _reset_scene_state() -> void:
     _initial_patch_complete = false
+    _initial_patch_index = 0
     _asteroid_effect_maps.clear()
     _asteroid_geometry_versions.clear()
     _patched_chunks.clear()
@@ -88,17 +91,30 @@ func _process(_delta: float) -> void:
 
     var asteroids_value = scene.get("asteroids")
     if asteroids_value is Dictionary and not _initial_patch_complete:
-        for asteroid_value in (asteroids_value as Dictionary).values():
+        # Wait until all ring asteroids have been created. Otherwise the first
+        # partial frame permanently marks the initial patch as complete.
+        if scene.get("asteroid_ring_ready") == false:
+            return
+
+        var values := (asteroids_value as Dictionary).values()
+        var processed := 0
+        while (
+            _initial_patch_index < values.size()
+            and processed < INITIAL_ASTEROIDS_PER_FRAME
+        ):
+            var asteroid_value = values[_initial_patch_index]
+            _initial_patch_index += 1
+            processed += 1
             if asteroid_value is Object and is_instance_valid(asteroid_value):
                 _ensure_asteroid_mesh_current(asteroid_value as Object)
-        _initial_patch_complete = true
+        _initial_patch_complete = _initial_patch_index >= values.size()
 
     _update_laser_targets_and_chunks(scene)
 
 
 func _physics_process(delta: float) -> void:
     var scene := get_tree().current_scene
-    if scene == null:
+    if scene == null or scene.get("asteroid_loading_in_progress") == true:
         return
 
     var asteroids_value = scene.get("asteroids")

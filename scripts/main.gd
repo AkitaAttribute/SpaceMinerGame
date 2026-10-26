@@ -1494,6 +1494,9 @@ func _launch_simulation() -> void:
 
     _save_current_ship_model()
     ShipStore.request_view("simulation", current_ship_id)
+    # A persistent overlay is painted before the heavy scene transition.
+    SimulationLoadingScreen.begin()
+    await get_tree().process_frame
     get_tree().change_scene_to_file("res://simulation.tscn")
 
 func _open_ship_model_menu(model_id: String) -> void:

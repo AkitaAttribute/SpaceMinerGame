@@ -35,6 +35,7 @@ const ASTEROID_SPAWN_SURFACE_GAP := 24.0
 const ASTEROID_LAUNCH_CENTER_CLEARANCE := 56.0
 const ASTEROID_MIN_CENTER_SEPARATION := 8.0
 const RING_ASTEROID_COUNT := 420
+const INITIAL_ASTEROID_BATCH_SIZE := 6
 const ASTEROID_MIN_SIZE := 3
 const ASTEROID_MAX_SIZE := 9
 
@@ -78,6 +79,11 @@ var asteroid_root: Node3D
 var effects_root: Node3D
 var planet: MeshInstance3D
 var asteroids: Dictionary = {}
+# The flight scene is never exposed or simulated until its finished render
+# meshes, special effects and single-pass optimizations all exist.
+var asteroid_loading_in_progress := true
+var asteroid_ring_ready := false
+var _load_start_usec := 0
 var mining_lasers: Array[Dictionary] = []
 var thruster_particles: Array[GPUParticles3D] = []
 var tractor_chunks: Array[Dictionary] = []
@@ -165,6 +171,8 @@ func _ready() -> void:
         get_tree().change_scene_to_file("res://main.tscn")
         return
 
+    SimulationLoadingScreen.begin()
+    _load_start_usec = Time.get_ticks_usec()
     _build_environment()
     _build_simulation_roots()
     _build_planet()
@@ -172,8 +180,10 @@ func _ready() -> void:
     launch_position = ship_body.global_position
     _build_camera()
     asteroid_rng.randomize()
-    _spawn_initial_asteroids()
     _build_ui()
+    SimulationLoadingScreen.set_progress(0.10, "Creating the asteroid ring...")
+    AppLogger.event("SIM_LOADING started stage=ring total=%d" % RING_ASTEROID_COUNT)
+    call_deferred("_complete_initial_simulation_loading")
 
     if not _is_mobile_platform() and "--simulation-smoke" not in OS.get_cmdline_user_args():
         Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -182,6 +192,65 @@ func _ready() -> void:
         var timer := get_tree().create_timer(7.0)
         timer.timeout.connect(get_tree().quit, CONNECT_ONE_SHOT)
 
+
+func _complete_initial_simulation_loading() -> void:
+    # Build asteroids across frames so the loading bar can actually redraw.
+    await _spawn_initial_asteroids()
+    if not is_inside_tree():
+        return
+    asteroid_ring_ready = true
+    var ring_ms := float(Time.get_ticks_usec() - _load_start_usec) / 1000.0
+    AppLogger.event("SIM_LOADING stage=ring_finished elapsed_ms=%.1f" % ring_ms)
+
+    var presenter := get_node_or_null("/root/AsteroidMetallicPresenter")
+    var optimizer := get_node_or_null("/root/AsteroidEffectSurfaceOptimizer")
+    var total := asteroids.size()
+    if presenter == null or optimizer == null:
+        push_error("Required asteroid effect preparation systems are missing.")
+        SimulationLoadingScreen.set_progress(0.70, "Asteroid loading failed; check diagnostics.")
+        return
+
+    # Initial presenter generation happens in bounded batches; the optimizer
+    # already handles 24 asteroids per rendered frame. Do not reveal the scene
+    # until both systems have processed *every* initial asteroid.
+    while is_inside_tree():
+        var presenter_versions = presenter.get("_asteroid_geometry_versions")
+        var optimizer_versions = optimizer.get("_optimized_versions")
+        var prepared := 0
+        var optimized := 0
+        if presenter_versions is Dictionary:
+            prepared = (presenter_versions as Dictionary).size()
+        if optimizer_versions is Dictionary:
+            optimized = (optimizer_versions as Dictionary).size()
+
+        if prepared >= total and optimized >= total:
+            break
+
+        var stage_progress := 0.70 + 0.27 * float(optimized) / float(maxi(1, total))
+        SimulationLoadingScreen.set_progress(
+            stage_progress,
+            "Preparing asteroid effects (%d / %d)..." % [optimized, total]
+        )
+        await get_tree().process_frame
+
+    if not is_inside_tree():
+        return
+
+    # Allow final render materials to reach the renderer before the first
+    # exposed simulation frame; the covering UI remains in its own CanvasLayer.
+    SimulationLoadingScreen.set_progress(0.98, "Finalizing the scene...")
+    await get_tree().process_frame
+    await get_tree().process_frame
+    if not is_inside_tree():
+        return
+
+    asteroid_loading_in_progress = false
+    var total_ms := float(Time.get_ticks_usec() - _load_start_usec) / 1000.0
+    AppLogger.event(
+        "SIM_LOADING ready asteroids=%d elapsed_ms=%.1f ring_ms=%.1f" %
+        [total, total_ms, ring_ms]
+    )
+    SimulationLoadingScreen.finish()
 
 func _build_environment() -> void:
     world_environment = WorldEnvironment.new()
@@ -993,7 +1062,7 @@ func _is_mobile_platform() -> bool:
 
 
 func _input(event: InputEvent) -> void:
-    if SkyCatalog.is_generating():
+    if asteroid_loading_in_progress or SkyCatalog.is_generating():
         return
 
     if _is_mobile_platform():
@@ -1015,7 +1084,7 @@ func _input(event: InputEvent) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-    if SkyCatalog.is_generating():
+    if asteroid_loading_in_progress or SkyCatalog.is_generating():
         return
 
     if event.is_action_pressed(&"menu_back"):
@@ -1818,7 +1887,7 @@ func _notification(what: int) -> void:
 
 
 func _process(delta: float) -> void:
-    if not performance_metrics_visible:
+    if asteroid_loading_in_progress or not performance_metrics_visible:
         return
 
     var frame_ms := delta * 1000.0
@@ -1845,7 +1914,7 @@ func _process(delta: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
-    if SkyCatalog.is_generating():
+    if asteroid_loading_in_progress or SkyCatalog.is_generating():
         _set_thruster_emission(false)
         return
 
@@ -2513,7 +2582,7 @@ func _resolve_camera_obstruction(
 func _spawn_initial_asteroids() -> void:
     # Build the complete ring once. Every asteroid remains present and keeps
     # orbiting, including bodies on the far side of the planet.
-    _populate_full_asteroid_ring()
+    await _populate_full_asteroid_ring()
 
 
 func _update_asteroids(delta: float) -> void:
@@ -2578,6 +2647,15 @@ func _populate_full_asteroid_ring() -> void:
     var slot_angle := TAU / float(RING_ASTEROID_COUNT)
 
     for slot in range(RING_ASTEROID_COUNT):
+        if slot > 0 and slot % INITIAL_ASTEROID_BATCH_SIZE == 0:
+            SimulationLoadingScreen.set_progress(
+                0.10 + 0.59 * float(slot) / float(RING_ASTEROID_COUNT),
+                "Generating asteroids (%d / %d)..." % [slot, RING_ASTEROID_COUNT]
+            )
+            await get_tree().process_frame
+            if not is_inside_tree():
+                return
+
         asteroid_spawn_sequence += 1
 
         var size_value := asteroid_rng.randi_range(
@@ -2692,6 +2770,7 @@ func _populate_full_asteroid_ring() -> void:
         "RING populated requested=%d actual=%d"
         % [RING_ASTEROID_COUNT, asteroids.size()]
     )
+    SimulationLoadingScreen.set_progress(0.70, "Building asteroid effects...")
 
 
 func _asteroid_spawn_is_clear(
