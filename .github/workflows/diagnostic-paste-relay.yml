@@ -50,6 +50,7 @@ jobs:
           print("=== SPACE_MINER_DIAGNOSTIC_END ===", flush=True)
           PY
       - name: Preserve complete diagnostic as downloadable artifact
+        if: ${{ hashFiles('sanitized-diagnostic.log') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: sanitized-space-miner-diagnostic
