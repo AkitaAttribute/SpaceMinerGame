@@ -1,0 +1,42 @@
+name: SpaceMinerGame Diagnostic Relay Cleanup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - diagnostics/relay-cleanup-request.json
+
+# Limited to deleting logs of a completed SpaceMinerGame relay run.
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  delete-relay-logs:
+    if: github.actor == 'AkitaAttribute'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify target and delete completed relay run logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_ID="$(jq -er '.run_id | select(type=="number" and floor==.)' diagnostics/relay-cleanup-request.json)"
+          if [[ "$RUN_ID" == "$GITHUB_RUN_ID" ]]; then
+            echo "Refusing to delete own workflow logs."
+            exit 1
+          fi
+
+          RUN="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")"
+          PATH_NAME="$(jq -r '.path' <<< "$RUN")"
+          RUN_STATUS="$(jq -r '.status' <<< "$RUN")"
+          if [[ "$PATH_NAME" != ".github/workflows/diagnostic-paste-relay.yml" || "$RUN_STATUS" != "completed" ]]; then
+            echo "Refusing cleanup: target is not a completed diagnostic relay run."
+            exit 1
+          fi
+
+          gh api --silent --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/logs"
+          echo "Deleted GitHub Actions logs from completed diagnostic relay run $RUN_ID."
