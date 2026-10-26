@@ -188,10 +188,6 @@ func _ready() -> void:
     if not _is_mobile_platform() and "--simulation-smoke" not in OS.get_cmdline_user_args():
         Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
-    if "--simulation-smoke" in OS.get_cmdline_user_args():
-        var timer := get_tree().create_timer(7.0)
-        timer.timeout.connect(get_tree().quit, CONNECT_ONE_SHOT)
-
 
 func _complete_initial_simulation_loading() -> void:
     # Build asteroids across frames so the loading bar can actually redraw.
@@ -251,6 +247,10 @@ func _complete_initial_simulation_loading() -> void:
         [total, total_ms, ring_ms]
     )
     SimulationLoadingScreen.finish()
+    if "--simulation-smoke" in OS.get_cmdline_user_args():
+        print("SIM_LOADING_READY asteroids=%d" % total)
+        var timer := get_tree().create_timer(1.5)
+        timer.timeout.connect(get_tree().quit, CONNECT_ONE_SHOT)
 
 func _build_environment() -> void:
     world_environment = WorldEnvironment.new()
