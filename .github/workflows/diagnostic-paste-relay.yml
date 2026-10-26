@@ -28,7 +28,10 @@ jobs:
 
           event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
           if os.environ["GITHUB_EVENT_NAME"] == "push":
-              body = json.loads(Path("diagnostics/paste-relay-request.json").read_text())["url"].strip()
+              body = str(json.loads(Path("diagnostics/paste-relay-request.json").read_text()).get("url", "")).strip()
+              if not body:
+                  print("No active diagnostic request; nothing to retrieve.")
+                  raise SystemExit(0)
           else:
               body = (event["issue"].get("body") or "").strip()
           match = re.fullmatch(r"https://pastebin\.ai/p/([a-zA-Z0-9_-]{4,80})/?", body)
