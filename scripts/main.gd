@@ -1494,10 +1494,30 @@ func _launch_simulation() -> void:
 
     _save_current_ship_model()
     ShipStore.request_view("simulation", current_ship_id)
-    # A persistent overlay is painted before the heavy scene transition.
-    SimulationLoadingScreen.begin()
-    await get_tree().process_frame
+    # Installed preview builds retain their original ProjectSettings autoloads:
+    # a downloaded resource pack cannot register a new global singleton.
+    # Instantiate the scene-independent overlay explicitly at runtime.
+    var loading_overlay := _get_or_create_simulation_loading_screen()
+    if loading_overlay != null:
+        loading_overlay.call("begin")
+        await get_tree().process_frame
     get_tree().change_scene_to_file("res://simulation.tscn")
+
+
+func _get_or_create_simulation_loading_screen() -> Node:
+    var existing := get_node_or_null("/root/SimulationLoadingScreen")
+    if existing != null:
+        return existing
+    var script = load("res://scripts/simulation_loading_screen.gd")
+    if not (script is GDScript):
+        push_error("Cannot load simulation loading-screen script.")
+        return null
+    var overlay := (script as GDScript).new() as Node
+    if overlay == null:
+        return null
+    overlay.name = "SimulationLoadingScreen"
+    get_tree().root.add_child(overlay)
+    return overlay
 
 func _open_ship_model_menu(model_id: String) -> void:
     menu_ship_id = model_id

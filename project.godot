@@ -29,7 +29,6 @@ PartPickerUI="*res://scripts/part_picker_ui.gd"
 GamepadSettingsUI="*res://scripts/gamepad_settings_ui.gd"
 SkyCatalog="*res://scripts/sky_catalog.gd"
 ShipStore="*res://scripts/ship_store.gd"
-SimulationLoadingScreen="*res://scripts/simulation_loading_screen.gd"
 
 [debug]
 settings/gdscript/always_track_call_stacks=true

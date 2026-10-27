@@ -168,6 +168,20 @@ jobs:
             exit 1
           fi
 
+      - name: Verify resource-pack compatibility with installed preview builds
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          project = Path("project.godot").read_text()
+          if 'SimulationLoadingScreen="*' in project:
+              raise SystemExit("Loading screen must not be a new ProjectSettings autoload: existing preview executables cannot receive autoload changes from PCK updates.")
+          sources = [Path("scripts/main.gd").read_text(), Path("scripts/simulation.gd").read_text()]
+          if any("SimulationLoadingScreen." in source for source in sources):
+              raise SystemExit("Found direct singleton references incompatible with installed preview builds.")
+          print("Validated: loading overlay created dynamically; no new autoload dependency.")
+          PY
+
       - name: Simulation smoke test
         shell: bash
         run: |
