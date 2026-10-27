@@ -21,10 +21,12 @@ func _run() -> void:
 
     var simulation: Node3D = (script_value as GDScript).new()
     var ship_root := Node3D.new()
+    get_root().add_child(ship_root)
     simulation.set("ship_visual_root", ship_root)
 
     var asteroid := SpaceAsteroid.new()
     asteroid.configure("last-cell-test", Vector3(0.0, 0.0, -20.0), 42, 3)
+    get_root().add_child(asteroid)
 
     # Retain only an off-center voxel, matching the late-mining geometry that
     # used to leave autopilot orbiting while one blocked turret monopolized it.
@@ -45,6 +47,8 @@ func _run() -> void:
     clear_pivot.position = Vector3(3.0, 0.0, 0.0)
     var blocked_pivot := Node3D.new()
     blocked_pivot.position = Vector3.ZERO
+    ship_root.add_child(clear_pivot)
+    ship_root.add_child(blocked_pivot)
 
     var clear_laser := {
         "target": asteroid,
@@ -108,7 +112,5 @@ func _run() -> void:
     print("LAST_CELL_SMOKE_PASS blocked reservation released; final voxel detached")
     simulation.free()
     ship_root.free()
-    clear_pivot.free()
-    blocked_pivot.free()
     asteroid.free()
     quit()
