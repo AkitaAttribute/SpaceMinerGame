@@ -168,6 +168,23 @@ jobs:
             exit 1
           fi
 
+      - name: Verify fresh executable supersedes old installed resource packs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          script = Path("scripts/update_manager.gd").read_text()
+          must_have = [
+              "var installed_build := int(installed.get(\"build\", 0))",
+              "var bundled_build := _embedded_build()",
+              "installed_build <= bundled_build",
+          ]
+          for item in must_have:
+              if item not in script:
+                  raise SystemExit("Missing recovery compatibility check: " + item)
+          print("Verified updated Windows and Android binaries ignore older PCK updates.")
+          PY
+
       - name: Verify resource-pack compatibility with installed preview builds
         shell: bash
         run: |
@@ -364,4 +381,12 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --clobber
           # Upload the manifest last, only once both downloadable packs exist.
           gh release upload "$tag" build/manifest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          # Publish complete reinstallable builds as a recovery route when a
+          # bad PCK prevents the in-app updater from opening. Android uses the
+          # persistent signing key and ascending versionCode, allowing an
+          # in-place update that preserves user:// saves and settings.
+          gh release upload "$tag" \
+            build/SpaceMinerGame.exe \
+            build/SpaceMinerGame-Android.apk \
             --repo "$GITHUB_REPOSITORY" --clobber

@@ -86,6 +86,23 @@ func _load_installed_pack() -> void:
     var installed := _read_installed_metadata()
     if str(installed.get("channel", "")) != CHANNEL:
         return
+
+    # Important for in-place Windows/Android recovery: the newest full
+    # executable or APK must take precedence over a previously downloaded PCK.
+    # Otherwise an installed (possibly broken) patch can override newly fixed
+    # scripts on every startup, even after a full application update.
+    var installed_build := int(installed.get("build", 0))
+    var bundled_build := _embedded_build()
+    if bundled_build > 0 and installed_build <= bundled_build:
+        print(
+            "Space Miner: skipping previous update pack build ",
+            installed_build,
+            "; bundled app build ",
+            bundled_build,
+            " is newer or equal."
+        )
+        return
+
     var path := str(installed.get("path", ""))
     if not path.begins_with(UPDATE_DIR + "/") or not path.ends_with(".pck"):
         return
