@@ -219,6 +219,20 @@ jobs:
             exit 1
           fi
 
+      - name: Final-voxel mining and reservation regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 20s godot --headless --path . --script res://tests/mining_last_cell_smoke.gd 2>&1 | tee /tmp/last-cell-test.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script|Invalid call|Invalid access|ERROR:" /tmp/last-cell-test.log; then
+            echo "Godot reported an error during the final-voxel mining test."
+            exit 1
+          fi
+          if ! grep -F "LAST_CELL_SMOKE_PASS" /tmp/last-cell-test.log; then
+            echo "Final-voxel mining regression test did not complete."
+            exit 1
+          fi
+
       - name: Export Windows executable
         shell: bash
         run: |
