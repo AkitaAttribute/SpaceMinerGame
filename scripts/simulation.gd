@@ -7,6 +7,9 @@ const LASER_ALIGNMENT_DOT := 0.985
 const LASER_BARREL_LENGTH := 0.42
 const LASER_PREPARE_SECONDS := 0.40
 const LASER_SURFACE_TRANSITION_SECONDS := 1.50
+# Bound visibility searches for large asteroids; remnants with <= 12 surface
+# voxels are exhaustively checked so a last cell is never overlooked.
+const LASER_VISIBLE_CELL_SEARCH_LIMIT := 12
 
 const AUTO_ORBIT_MIN_CLEARANCE := 8.0
 const AUTO_ORBIT_TARGET_LASER_DISTANCE := 20.0
@@ -2954,13 +2957,10 @@ func _update_mining_lasers(delta: float) -> void:
         # cell and cannot steal a cell already assigned to an active laser.
         var reserved_value = laser.get("reserved_cell", null)
         if not (reserved_value is Vector3i):
-            var exclusions := _reserved_mining_cells(
-                asteroid,
-                laser_index
-            )
-            var selection := asteroid.closest_surface_cell_excluding(
-                _laser_muzzle_world(pivot),
-                exclusions
+            var selection := _choose_visible_mining_cell(
+                laser,
+                laser_index,
+                asteroid
             )
             if selection.is_empty():
                 laser["reserved_cell"] = null
@@ -3006,21 +3006,27 @@ func _update_mining_lasers(delta: float) -> void:
             LASER_MINING_SECONDS
             - LASER_SURFACE_TRANSITION_SECONDS
         )
-        var transition := clampf(
-            (fire_time - transition_start)
-            / LASER_SURFACE_TRANSITION_SECONDS,
-            0.0,
-            1.0
-        )
-        var smooth_transition := (
-            transition
-            * transition
-            * (3.0 - 2.0 * transition)
-        )
-        aim_position = asteroid.global_position.lerp(
-            cell_position,
-            smooth_transition
-        )
+        # Once only a few voxels remain, the original asteroid center may be
+        # far from the actual remnant. Aim at the real cell from the start,
+        # rather than spending the whole mining cycle aiming at empty space.
+        if int(asteroid.get("_remaining_cells")) <= 4:
+            aim_position = cell_position
+        else:
+            var transition := clampf(
+                (fire_time - transition_start)
+                / LASER_SURFACE_TRANSITION_SECONDS,
+                0.0,
+                1.0
+            )
+            var smooth_transition := (
+                transition
+                * transition
+                * (3.0 - 2.0 * transition)
+            )
+            aim_position = asteroid.global_position.lerp(
+                cell_position,
+                smooth_transition
+            )
 
         _track_laser_pivot(pivot, aim_position, delta)
 
@@ -3068,6 +3074,10 @@ func _update_mining_lasers(delta: float) -> void:
             beam.visible = false
             laser["fire_time"] = 0.0
             laser["prepared_detach"] = {}
+            # A permanently obstructed laser must NOT own the last voxel.
+            # Release its reservation immediately so another turret can
+            # acquire the cell on the next physics update.
+            laser["reserved_cell"] = null
         else:
             _clear_laser_hard_error(laser)
             _set_laser_status(laser_index, true, "")
@@ -3196,13 +3206,11 @@ func _choose_laser_target(
         var distance := _laser_cell_hitbox_distance(laser, asteroid)
         if distance > LASER_RANGE or distance >= best_distance:
             continue
-        if _laser_target_is_obstructed(laser, asteroid):
-            continue
-        if not _laser_target_has_available_cell(
+        if _choose_visible_mining_cell(
             laser,
             laser_index,
             asteroid
-        ):
+        ).is_empty():
             continue
 
         best_distance = distance
@@ -3211,40 +3219,38 @@ func _choose_laser_target(
     return best
 
 
-func _laser_target_has_available_cell(
+func _choose_visible_mining_cell(
     laser: Dictionary,
     laser_index: int,
     asteroid: SpaceAsteroid
-) -> bool:
+) -> Dictionary:
     var pivot = laser.get("pivot", null)
     if pivot == null or not is_instance_valid(pivot):
-        return false
+        return {}
 
-    var exclusions := _reserved_mining_cells(
-        asteroid,
-        laser_index
-    )
-    var selection := asteroid.closest_surface_cell_excluding(
-        _laser_muzzle_world(pivot as Node3D),
-        exclusions
-    )
-    return not selection.is_empty()
+    var muzzle := _laser_muzzle_world(pivot as Node3D)
+    var excluded := _reserved_mining_cells(asteroid, laser_index)
+    var laser_cell := laser.get("anchor_cell", Vector3i.ZERO) as Vector3i
 
+    # The nearest unreserved cell is not necessarily shootable: other parts
+    # of the ship may block it. Try alternative exposed cells without taking
+    # a reservation on anything we cannot hit. This is exhaustive when an
+    # asteroid has become a small remnant, including the very last voxel.
+    for attempt in range(LASER_VISIBLE_CELL_SEARCH_LIMIT):
+        var selection := asteroid.closest_surface_cell_excluding(
+            muzzle,
+            excluded
+        )
+        if selection.is_empty():
+            return {}
 
-func _laser_target_is_obstructed(
-    laser: Dictionary,
-    asteroid: SpaceAsteroid
-) -> bool:
-    var pivot = laser.get("pivot", null)
-    if pivot == null or not is_instance_valid(pivot):
-        return true
+        var cell := selection.get("cell", Vector3i.ZERO) as Vector3i
+        var position := selection.get("position", asteroid.global_position) as Vector3
+        if not _ship_blocks_segment(muzzle, position, laser_cell):
+            return selection
+        excluded.append(cell)
 
-    var pivot_node := pivot as Node3D
-    return _ship_blocks_segment(
-        pivot_node.global_position,
-        asteroid.global_position,
-        laser.get("anchor_cell", Vector3i.ZERO) as Vector3i
-    )
+    return {}
 
 
 func _set_laser_hard_error(
