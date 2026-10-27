@@ -25,8 +25,12 @@ func _run() -> void:
     simulation.set("ship_visual_root", ship_root)
 
     var asteroid := SpaceAsteroid.new()
+    # Keep the test asteroid's transform stable when attaching it to the
+    # SceneTree; physics synchronization is irrelevant in this headless test.
+    asteroid.sync_to_physics = false
     asteroid.configure("last-cell-test", Vector3(0.0, 0.0, -20.0), 42, 3)
     get_root().add_child(asteroid)
+    asteroid.global_position = Vector3(0.0, 0.0, -20.0)
 
     # Retain only an off-center voxel, matching the late-mining geometry that
     # used to leave autopilot orbiting while one blocked turret monopolized it.
@@ -71,7 +75,23 @@ func _run() -> void:
         "cell": Vector3i(9, 9, 9),
         "aabb": AABB(Vector3(-0.5, -0.5, -8.0), Vector3.ONE),
     }
-    simulation.set("ship_cell_boxes", [occluder])
+    var boxes: Array[Dictionary] = [occluder]
+    simulation.set("ship_cell_boxes", boxes)
+
+    var blocked_muzzle := blocked_pivot.global_position + Vector3.UP * 0.42
+    var remaining_world := asteroid.cell_world_position(last_cell)
+    var ray_is_blocked: bool = simulation.call(
+        "_ship_blocks_segment",
+        blocked_muzzle,
+        remaining_world,
+        blocked_laser["anchor_cell"]
+    )
+    if not ray_is_blocked:
+        _fail(
+            "fixture invalid: obstacle does not intercept laser; muzzle=%s target=%s blockers=%s"
+            % [str(blocked_muzzle), str(remaining_world), str(simulation.get("ship_cell_boxes"))]
+        )
+        return
 
     var blocked: Dictionary = simulation.call(
         "_choose_visible_mining_cell", blocked_laser, 1, asteroid
