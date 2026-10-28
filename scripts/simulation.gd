@@ -175,6 +175,7 @@ var mobile_perf_asteroids_us := 0
 var mobile_perf_tractor_us := 0
 var mobile_perf_mining_us := 0
 var mobile_perf_camera_us := 0
+var mobile_render_viewport := RID()
 
 var mobile_joystick: VirtualJoystick
 var mobile_last_turn_sign := 1.0
@@ -203,6 +204,12 @@ func _ready() -> void:
     _build_camera()
     asteroid_rng.randomize()
     _build_ui()
+    if _is_mobile_platform():
+        mobile_render_viewport = get_viewport().get_viewport_rid()
+        if mobile_render_viewport.is_valid():
+            RenderingServer.viewport_set_measure_render_time(
+                mobile_render_viewport, true
+            )
     _simulation_loading_screen.call("set_progress", 0.10, "Creating the asteroid ring...")
     AppLogger.event("SIM_LOADING started stage=ring total=%d" % RING_ASTEROID_COUNT)
     call_deferred("_complete_initial_simulation_loading")
@@ -1959,6 +1966,16 @@ func _process(delta: float) -> void:
                     int(Performance.get_monitor(
                         Performance.OBJECT_NODE_COUNT
                     )),
+                ]
+                + " render_cpu_ms=%.2f render_gpu_ms=%.2f render_setup_cpu_ms=%.2f"
+                % [
+                    RenderingServer.viewport_get_measured_render_time_cpu(
+                        mobile_render_viewport
+                    ) if mobile_render_viewport.is_valid() else -1.0,
+                    RenderingServer.viewport_get_measured_render_time_gpu(
+                        mobile_render_viewport
+                    ) if mobile_render_viewport.is_valid() else -1.0,
+                    RenderingServer.get_frame_setup_time_cpu(),
                 ]
             )
             var tick_count := maxi(1, mobile_perf_physics_ticks)
