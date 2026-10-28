@@ -113,13 +113,6 @@ func _process(_delta: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
-    # Mobile already reduces distant asteroid physics/orbit updates, and far
-    # asteroids occupy only a few pixels. Do not undo that saving by rotating
-    # every distant visual mesh at the 60 Hz physics cadence. Near asteroids
-    # continue to spin normally through Simulation._update_asteroids().
-    if OS.has_feature("android") or OS.has_feature("ios") or OS.has_feature("mobile"):
-        return
-
     var scene := get_tree().current_scene
     if scene == null or scene.get("asteroid_loading_in_progress") == true:
         return
