@@ -166,6 +166,15 @@ var mobile_perf_elapsed := 0.0
 var mobile_perf_frames := 0
 var mobile_perf_slow_frames := 0
 var mobile_perf_worst_frame_ms := 0.0
+var mobile_perf_physics_ticks := 0
+var mobile_perf_physics_total_us := 0
+var mobile_perf_physics_max_us := 0
+var mobile_perf_collision_us := 0
+var mobile_perf_ship_us := 0
+var mobile_perf_asteroids_us := 0
+var mobile_perf_tractor_us := 0
+var mobile_perf_mining_us := 0
+var mobile_perf_camera_us := 0
 
 var mobile_joystick: VirtualJoystick
 var mobile_last_turn_sign := 1.0
@@ -1952,10 +1961,40 @@ func _process(delta: float) -> void:
                     )),
                 ]
             )
+            var tick_count := maxi(1, mobile_perf_physics_ticks)
+            AppLogger.event(
+                "MOBILE_PHYSICS ticks=%d total_avg_ms=%.3f max_ms=%.3f "
+                % [
+                    mobile_perf_physics_ticks,
+                    float(mobile_perf_physics_total_us) / tick_count / 1000.0,
+                    float(mobile_perf_physics_max_us) / 1000.0,
+                ]
+                + "collision_avg_ms=%.3f ship_avg_ms=%.3f asteroids_avg_ms=%.3f "
+                % [
+                    float(mobile_perf_collision_us) / tick_count / 1000.0,
+                    float(mobile_perf_ship_us) / tick_count / 1000.0,
+                    float(mobile_perf_asteroids_us) / tick_count / 1000.0,
+                ]
+                + "tractor_avg_ms=%.3f mining_avg_ms=%.3f camera_avg_ms=%.3f"
+                % [
+                    float(mobile_perf_tractor_us) / tick_count / 1000.0,
+                    float(mobile_perf_mining_us) / tick_count / 1000.0,
+                    float(mobile_perf_camera_us) / tick_count / 1000.0,
+                ]
+            )
             mobile_perf_elapsed = 0.0
             mobile_perf_frames = 0
             mobile_perf_slow_frames = 0
             mobile_perf_worst_frame_ms = 0.0
+            mobile_perf_physics_ticks = 0
+            mobile_perf_physics_total_us = 0
+            mobile_perf_physics_max_us = 0
+            mobile_perf_collision_us = 0
+            mobile_perf_ship_us = 0
+            mobile_perf_asteroids_us = 0
+            mobile_perf_tractor_us = 0
+            mobile_perf_mining_us = 0
+            mobile_perf_camera_us = 0
 
     if asteroid_loading_in_progress or not performance_metrics_visible:
         return
@@ -1990,6 +2029,12 @@ func _physics_process(delta: float) -> void:
 
     if menu_open:
         _set_thruster_emission(false)
+        return
+
+    # Instrument actual mobile physics work with no change to its call order.
+    # Keep this enabled even when the debug performance overlay is hidden.
+    if _is_mobile_platform():
+        _profile_mobile_physics(delta)
         return
 
     if not performance_metrics_visible:
@@ -2033,6 +2078,58 @@ func _physics_process(delta: float) -> void:
     _performance_record_elapsed("camera", section_start)
 
     _performance_record_elapsed("script_physics_total", physics_start)
+
+
+func _profile_mobile_physics(delta: float) -> void:
+    var physics_start := Time.get_ticks_usec()
+    var stage_start := physics_start
+
+    _sync_ship_collision_transforms()
+    var collision_us := Time.get_ticks_usec() - stage_start
+
+    stage_start = Time.get_ticks_usec()
+    _update_ship_motion(delta)
+    var ship_us := Time.get_ticks_usec() - stage_start
+
+    stage_start = Time.get_ticks_usec()
+    _update_asteroids(delta)
+    var asteroid_us := Time.get_ticks_usec() - stage_start
+
+    stage_start = Time.get_ticks_usec()
+    _update_tractor_chunks(delta)
+    var tractor_us := Time.get_ticks_usec() - stage_start
+
+    stage_start = Time.get_ticks_usec()
+    _update_mining_lasers(delta)
+    var mining_us := Time.get_ticks_usec() - stage_start
+
+    stage_start = Time.get_ticks_usec()
+    _sync_ship_collision_transforms()
+    collision_us += Time.get_ticks_usec() - stage_start
+
+    stage_start = Time.get_ticks_usec()
+    _update_camera(delta)
+    var camera_us := Time.get_ticks_usec() - stage_start
+
+    var total_us := Time.get_ticks_usec() - physics_start
+    mobile_perf_physics_ticks += 1
+    mobile_perf_physics_total_us += total_us
+    mobile_perf_physics_max_us = maxi(mobile_perf_physics_max_us, total_us)
+    mobile_perf_collision_us += collision_us
+    mobile_perf_ship_us += ship_us
+    mobile_perf_asteroids_us += asteroid_us
+    mobile_perf_tractor_us += tractor_us
+    mobile_perf_mining_us += mining_us
+    mobile_perf_camera_us += camera_us
+
+    if performance_metrics_visible:
+        _performance_record("script_physics_total", float(total_us) / 1000.0)
+        _performance_record("collision_sync", float(collision_us) / 1000.0)
+        _performance_record("ship_motion", float(ship_us) / 1000.0)
+        _performance_record("asteroids", float(asteroid_us) / 1000.0)
+        _performance_record("tractor", float(tractor_us) / 1000.0)
+        _performance_record("mining_lasers", float(mining_us) / 1000.0)
+        _performance_record("camera", float(camera_us) / 1000.0)
 
 
 func _update_ship_motion(delta: float) -> void:
