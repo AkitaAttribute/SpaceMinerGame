@@ -47,6 +47,14 @@ var _patched_chunks: Dictionary = {}
 var _laser_effect_cache: Dictionary = {}
 var _far_visual_spin: Dictionary = {}
 
+# Passive mobile profiling; these counters never change presentation behavior.
+var _mobile_process_count := 0
+var _mobile_process_total_us := 0
+var _mobile_spin_count := 0
+var _mobile_spin_total_us := 0
+var _mobile_spin_max_us := 0
+var _mobile_profile_elapsed := 0.0
+
 var _normal_material: StandardMaterial3D
 var _metallic_material: StandardMaterial3D
 var _iridescent_material: StandardMaterial3D
@@ -78,6 +86,8 @@ func _reset_scene_state() -> void:
 
 
 func _process(_delta: float) -> void:
+    var mobile := OS.has_feature("android") or OS.has_feature("ios") or OS.has_feature("mobile")
+    var profile_start := Time.get_ticks_usec() if mobile else 0
     var scene := get_tree().current_scene
     if scene == null:
         _scene_id = 0
@@ -110,6 +120,9 @@ func _process(_delta: float) -> void:
         _initial_patch_complete = _initial_patch_index >= values.size()
 
     _update_laser_targets_and_chunks(scene)
+    if mobile:
+        _mobile_process_count += 1
+        _mobile_process_total_us += Time.get_ticks_usec() - profile_start
 
 
 func _physics_process(delta: float) -> void:
@@ -121,11 +134,40 @@ func _physics_process(delta: float) -> void:
     if not (asteroids_value is Dictionary):
         return
 
+    var mobile := OS.has_feature("android") or OS.has_feature("ios") or OS.has_feature("mobile")
+    var profile_start := Time.get_ticks_usec() if mobile else 0
     _restore_far_asteroid_spin(
         scene,
         asteroids_value as Dictionary,
         delta
     )
+    if mobile:
+        var elapsed_us := Time.get_ticks_usec() - profile_start
+        _mobile_spin_count += 1
+        _mobile_spin_total_us += elapsed_us
+        _mobile_spin_max_us = maxi(_mobile_spin_max_us, elapsed_us)
+        _mobile_profile_elapsed += delta
+        if _mobile_profile_elapsed >= 5.0:
+            AppLogger.event(
+                "MOBILE_ASTEROID_PRESENTER process_avg_ms=%.3f "
+                % [
+                    float(_mobile_process_total_us)
+                    / maxi(1, _mobile_process_count) / 1000.0
+                ]
+                + "far_spin_avg_ms=%.3f far_spin_max_ms=%.3f "
+                % [
+                    float(_mobile_spin_total_us)
+                    / maxi(1, _mobile_spin_count) / 1000.0,
+                    float(_mobile_spin_max_us) / 1000.0,
+                ]
+                + "asteroid_count=%d" % (asteroids_value as Dictionary).size()
+            )
+            _mobile_profile_elapsed = 0.0
+            _mobile_process_count = 0
+            _mobile_process_total_us = 0
+            _mobile_spin_count = 0
+            _mobile_spin_total_us = 0
+            _mobile_spin_max_us = 0
 
 
 func _build_effect_materials() -> void:
