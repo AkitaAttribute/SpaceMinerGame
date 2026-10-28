@@ -1,1 +1,4 @@
-{"run_id":40248925878,"reason":"Remove earlier duplicate simulator-loading diagnostic relay"}
+{
+  "run_id": 40649515248,
+  "reason": "Remove October 28 mobile lag diagnostic relay after verified chat attachment"
+}
