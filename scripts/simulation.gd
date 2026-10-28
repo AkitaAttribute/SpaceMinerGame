@@ -159,6 +159,14 @@ var performance_collision_range_asteroids := 0
 var performance_hitches_25ms := 0
 var performance_hitches_50ms := 0
 
+# Lightweight Android/iOS counters are always logged, even when the debug
+# performance panel is hidden. Sampling is limited to one record per five
+# seconds so future mobile reports contain real frame-time measurements.
+var mobile_perf_elapsed := 0.0
+var mobile_perf_frames := 0
+var mobile_perf_slow_frames := 0
+var mobile_perf_worst_frame_ms := 0.0
+
 var mobile_joystick: VirtualJoystick
 var mobile_last_turn_sign := 1.0
 var desktop_cursor_hold := false
@@ -1908,6 +1916,47 @@ func _notification(what: int) -> void:
 
 
 func _process(delta: float) -> void:
+    if _is_mobile_platform() and not asteroid_loading_in_progress:
+        mobile_perf_elapsed += delta
+        mobile_perf_frames += 1
+        var mobile_frame_ms := delta * 1000.0
+        mobile_perf_worst_frame_ms = maxf(
+            mobile_perf_worst_frame_ms, mobile_frame_ms
+        )
+        if mobile_frame_ms >= 25.0:
+            mobile_perf_slow_frames += 1
+
+        if mobile_perf_elapsed >= PERF_LOG_INTERVAL:
+            AppLogger.event(
+                "MOBILE_PERF fps=%.1f worst_frame_ms=%.2f slow_frames_25ms=%d "
+                % [
+                    float(mobile_perf_frames) / mobile_perf_elapsed,
+                    mobile_perf_worst_frame_ms,
+                    mobile_perf_slow_frames,
+                ]
+                + "engine_process_ms=%.2f engine_physics_ms=%.2f "
+                % [
+                    _performance_monitor_ms(Performance.TIME_PROCESS),
+                    _performance_monitor_ms(Performance.TIME_PHYSICS_PROCESS),
+                ]
+                + "draws=%d primitives=%d scene_nodes=%d"
+                % [
+                    int(Performance.get_monitor(
+                        Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME
+                    )),
+                    int(Performance.get_monitor(
+                        Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME
+                    )),
+                    int(Performance.get_monitor(
+                        Performance.OBJECT_NODE_COUNT
+                    )),
+                ]
+            )
+            mobile_perf_elapsed = 0.0
+            mobile_perf_frames = 0
+            mobile_perf_slow_frames = 0
+            mobile_perf_worst_frame_ms = 0.0
+
     if asteroid_loading_in_progress or not performance_metrics_visible:
         return
 
