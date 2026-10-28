@@ -26,6 +26,11 @@ var _optimized_versions: Dictionary = {}
 var _single_pass_material: ShaderMaterial
 var _logged_initial_summary := false
 var _optimized_total := 0
+var _mobile_profile_elapsed := 0.0
+var _mobile_profile_frames := 0
+var _mobile_profile_total_us := 0
+var _mobile_profile_max_us := 0
+var _mobile_profile_geometry_updates := 0
 
 
 func _ready() -> void:
@@ -37,7 +42,9 @@ func _ready() -> void:
     _single_pass_material.shader = _create_single_pass_shader()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+    var mobile := OS.has_feature("android") or OS.has_feature("ios") or OS.has_feature("mobile")
+    var profile_start := Time.get_ticks_usec() if mobile else 0
     var scene := get_tree().current_scene
     if scene == null:
         _scene_id = 0
@@ -103,6 +110,30 @@ func _process(_delta: float) -> void:
             "ASTEROID_EFFECT_OPTIMIZER single_surface=true optimized=%d"
             % _optimized_total
         )
+
+    if mobile:
+        var elapsed_us := Time.get_ticks_usec() - profile_start
+        _mobile_profile_frames += 1
+        _mobile_profile_total_us += elapsed_us
+        _mobile_profile_max_us = maxi(_mobile_profile_max_us, elapsed_us)
+        _mobile_profile_geometry_updates += optimized_this_frame
+        _mobile_profile_elapsed += delta
+        if _mobile_profile_elapsed >= 5.0:
+            AppLogger.event(
+                "MOBILE_ASTEROID_OPTIMIZER avg_ms=%.3f max_ms=%.3f "
+                % [
+                    float(_mobile_profile_total_us)
+                    / maxi(1, _mobile_profile_frames) / 1000.0,
+                    float(_mobile_profile_max_us) / 1000.0,
+                ]
+                + "geometry_updates=%d asteroid_count=%d"
+                % [_mobile_profile_geometry_updates, asteroids.size()]
+            )
+            _mobile_profile_elapsed = 0.0
+            _mobile_profile_frames = 0
+            _mobile_profile_total_us = 0
+            _mobile_profile_max_us = 0
+            _mobile_profile_geometry_updates = 0
 
 
 func _optimize_asteroid_mesh(asteroid: Object, presenter: Node) -> bool:
