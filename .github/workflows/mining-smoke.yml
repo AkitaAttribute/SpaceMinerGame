@@ -1,0 +1,48 @@
+name: Mining queue and proximity smoke tests
+
+on:
+  push:
+    branches:
+      - fix/event-driven-mining-queue
+  pull_request:
+    branches:
+      - prototype/ship-builder-first-pass
+
+permissions:
+  contents: read
+
+jobs:
+  test-mining:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Godot 4.7.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 -o /tmp/godot.zip https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          unzip -q /tmp/godot.zip -d /tmp
+          chmod +x /tmp/Godot_v4.7.1-stable_linux.x86_64
+          sudo mv /tmp/Godot_v4.7.1-stable_linux.x86_64 /usr/local/bin/godot
+          godot --version
+      - name: Import scripts and check for parse errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          godot --headless --path . --editor --import 2>&1 | tee /tmp/godot-import.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script" /tmp/godot-import.log; then exit 1; fi
+      - name: Last voxel and obstruction regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s godot --headless --path . --script res://tests/mining_last_cell_smoke.gd 2>&1 | tee /tmp/last-cell.log
+          grep -q LAST_CELL_SMOKE_PASS /tmp/last-cell.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|ERROR:" /tmp/last-cell.log; then exit 1; fi
+      - name: Multi-laser queue and proximity regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s godot --headless --path . --script res://tests/mining_queue_smoke.gd 2>&1 | tee /tmp/mining-queue.log
+          grep -q MINING_QUEUE_SMOKE_PASS /tmp/mining-queue.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|ERROR:" /tmp/mining-queue.log; then exit 1; fi
