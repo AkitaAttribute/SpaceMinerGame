@@ -93,31 +93,54 @@ func _run() -> void:
         )
         return
 
-    var blocked: Dictionary = simulation.call(
-        "_choose_visible_mining_cell", blocked_laser, 1, asteroid
+    # The asteroid owns assignments, rather than having lasers scan one
+    # another's local reservation dictionaries.
+    var blocked_worker := blocked_pivot.get_instance_id()
+    var clear_worker := clear_pivot.get_instance_id()
+    var blocked_assignment := asteroid.claim_mining_cell(
+        blocked_worker, blocked_muzzle, func(_position: Vector3) -> bool:
+            return true
     )
-    if not blocked.is_empty():
-        _fail("blocked laser improperly selected final voxel")
+    if blocked_assignment.get("cell") != last_cell:
+        _fail("blocked worker did not acquire its initial assignment")
         return
 
-    var reserved: Dictionary = simulation.call(
-        "_choose_visible_mining_cell", clear_laser, 0, asteroid
+    var clear_muzzle := clear_pivot.global_position + Vector3.UP * 0.42
+    var clear_check := func(position: Vector3) -> bool:
+        return not bool(simulation.call(
+            "_ship_blocks_segment", clear_muzzle, position,
+            clear_laser["anchor_cell"]
+        ))
+    var reserved := asteroid.claim_mining_cell(
+        clear_worker, clear_muzzle, clear_check
     )
     if not reserved.is_empty():
-        _fail("reserved voxel was acquired twice")
+        _fail("another worker acquired an already reserved cell")
         return
 
-    # The obstructed laser must yield its reservation; the unobstructed
-    # laser can then take the only remaining voxel.
-    blocked_laser["reserved_cell"] = null
-    entries[1] = blocked_laser
-    simulation.set("mining_lasers", entries)
+    # Once an obstructed miner releases its job, it must not reacquire an
+    # unreachable voxel, but the clear miner must receive that same cell.
+    asteroid.release_mining_cell(blocked_worker)
+    var blocked_check := func(position: Vector3) -> bool:
+        return not bool(simulation.call(
+            "_ship_blocks_segment", blocked_muzzle, position,
+            blocked_laser["anchor_cell"]
+        ))
+    var blocked_again := asteroid.claim_mining_cell(
+        blocked_worker, blocked_muzzle, blocked_check
+    )
+    if not blocked_again.is_empty():
+        _fail("blocked worker re-acquired the obstructed voxel")
+        return
 
-    var selection: Dictionary = simulation.call(
-        "_choose_visible_mining_cell", clear_laser, 0, asteroid
+    var selection := asteroid.claim_mining_cell(
+        clear_worker, clear_muzzle, clear_check
     )
     if selection.is_empty() or selection.get("cell") != last_cell:
-        _fail("last voxel not selectable after obstructed reservation released")
+        _fail("last voxel not assigned after blocked reservation released")
+        return
+    if asteroid.mining_assignment_count() != 1:
+        _fail("queue does not contain precisely the eligible miner")
         return
 
     var prepared := asteroid.prepare_detach_cell(last_cell)
@@ -125,7 +148,7 @@ func _run() -> void:
         _fail("cannot prepare final voxel for mining")
         return
     var detached := asteroid.commit_prepared_detach(prepared)
-    if detached.is_empty() or asteroid.has_cells():
+    if detached.is_empty() or asteroid.has_cells() or asteroid.mining_assignment_count() != 0:
         _fail("final voxel did not detach completely")
         return
 
