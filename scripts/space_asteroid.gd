@@ -37,6 +37,11 @@ var _metallic_cells: Dictionary = {}
 var _surface_cells: Array[Vector3i] = []
 var _remaining_cells := 0
 var _geometry_version := 0
+# Asteroid-owned work queue: one stable voxel assignment per mining laser.
+# No laser may reserve a cell already assigned to another worker.
+var _mining_assignments: Dictionary = {}
+var _mining_cell_owners: Dictionary = {}
+var _mining_queue_revision := 0
 var _visual: MeshInstance3D
 var _surface_material: StandardMaterial3D
 var _metallic_material: StandardMaterial3D
@@ -64,6 +69,9 @@ func configure(
     _surface_cells.clear()
     _remaining_cells = grid_size * grid_size * grid_size
     _geometry_version = 0
+    _mining_assignments.clear()
+    _mining_cell_owners.clear()
+    _mining_queue_revision = 0
     orbit_enabled = false
     _collision_active = true
     _far_orbit_accum = 0.0
@@ -286,6 +294,68 @@ func distance_to_surface(from_world: Vector3) -> float:
     return sqrt(best_distance_squared)
 
 
+# Work is assigned once when a laser starts or finishes a block, not every
+# physics tick. worker_id is the unique instance ID of that laser's pivot.
+# Accessibility is evaluated by the requesting ship because hull occlusion
+# depends on which laser is asking. No other asteroid is considered here.
+func mining_queue_revision() -> int:
+    return _mining_queue_revision
+
+
+func mining_assignment_count() -> int:
+    return _mining_assignments.size()
+
+
+func release_mining_cell(worker_id: int) -> void:
+    if not _mining_assignments.has(worker_id):
+        return
+    var cell := _mining_assignments[worker_id] as Vector3i
+    _mining_assignments.erase(worker_id)
+    _mining_cell_owners.erase(cell)
+    _mining_queue_revision += 1
+
+
+func claim_mining_cell(
+    worker_id: int,
+    from_world: Vector3,
+    is_accessible: Callable
+) -> Dictionary:
+    if _mining_assignments.has(worker_id):
+        var assigned := _mining_assignments[worker_id] as Vector3i
+        if _is_occupied(assigned) and _surface_cells.has(assigned):
+            return {"cell": assigned, "position": cell_world_position(assigned)}
+        release_mining_cell(worker_id)
+
+    if _surface_cells.is_empty():
+        return {}
+
+    var best_cell := Vector3i.ZERO
+    var best_position := Vector3.ZERO
+    var best_distance := INF
+    var found := false
+    for cell in _surface_cells:
+        if _mining_cell_owners.has(cell):
+            continue
+        var position := cell_world_position(cell)
+        var distance := position.distance_squared_to(from_world)
+        if distance >= best_distance:
+            continue
+        if is_accessible.is_valid() and not bool(is_accessible.call(position)):
+            continue
+        best_cell = cell
+        best_position = position
+        best_distance = distance
+        found = true
+
+    if not found:
+        return {}
+
+    _mining_assignments[worker_id] = best_cell
+    _mining_cell_owners[best_cell] = worker_id
+    _mining_queue_revision += 1
+    return {"cell": best_cell, "position": best_position}
+
+
 func closest_surface_cell_excluding(
     from_world: Vector3,
     excluded_cells: Array[Vector3i]
@@ -371,7 +441,12 @@ func commit_prepared_detach(prepared: Dictionary) -> Dictionary:
     var color := prepared.get("color", _cell_color(cell)) as Color
     var metallic := bool(prepared.get("metallic", _is_metallic_cell(cell)))
 
+    # Completing one queued job releases only its own reservation. Other
+    # lasers keep their assigned voxels and their five-second progress.
+    if _mining_cell_owners.has(cell):
+        release_mining_cell(int(_mining_cell_owners[cell]))
     _removed_cells[_cell_key(cell)] = true
+    _mining_queue_revision += 1
     _remaining_cells = maxi(0, _remaining_cells - 1)
     _geometry_version += 1
 
