@@ -3266,11 +3266,16 @@ func _claim_laser_mining_cell(
     var anchor := laser.get("anchor_cell", Vector3i.ZERO) as Vector3i
     var can_reach := func(position: Vector3) -> bool:
         return not _ship_blocks_segment(muzzle, position, anchor)
+    var mobile := _is_mobile_platform()
+    var start_us := Time.get_ticks_usec() if mobile else 0
     var claim := asteroid.claim_mining_cell(
         pivot.get_instance_id(), muzzle, can_reach
     )
-    if _is_mobile_platform():
+    if mobile:
         mobile_mining_claim_calls += 1
+        var elapsed_us := Time.get_ticks_usec() - start_us
+        mobile_mining_claim_us += elapsed_us
+        mobile_mining_claim_max_us = maxi(mobile_mining_claim_max_us, elapsed_us)
         if claim.is_empty():
             mobile_mining_claim_failures += 1
     return claim
