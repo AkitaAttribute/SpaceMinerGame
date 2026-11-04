@@ -46,3 +46,10 @@ jobs:
           timeout 30s godot --headless --path . --script res://tests/mining_queue_smoke.gd 2>&1 | tee /tmp/mining-queue.log
           grep -q MINING_QUEUE_SMOKE_PASS /tmp/mining-queue.log
           if grep -E "SCRIPT ERROR:|Parse Error:|ERROR:" /tmp/mining-queue.log; then exit 1; fi
+      - name: Blocked mining retry cooldown regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s godot --headless --path . --script res://tests/mining_retry_smoke.gd 2>&1 | tee /tmp/mining-retry.log
+          grep -q MINING_RETRY_SMOKE_PASS /tmp/mining-retry.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|ERROR:" /tmp/mining-retry.log; then exit 1; fi

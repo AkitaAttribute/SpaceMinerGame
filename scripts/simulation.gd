@@ -10,9 +10,9 @@ const LASER_SURFACE_TRANSITION_SECONDS := 1.50
 # Bound visibility searches for large asteroids; remnants with <= 12 surface
 # voxels are exhaustively checked so a last cell is never overlooked.
 const MINING_TARGET_RETRY_SECONDS := 0.50
-const MINING_CELL_RETRY_SECONDS := 0.50
+const MINING_CELL_RETRY_SECONDS := 1.50
+const MINING_CELL_EVENT_RETRY_SECONDS := 0.25
 const MINING_RANGE_CHECK_SECONDS := 0.20
-const MINING_RETRY_MOVEMENT_SQUARED := 1.0
 
 const AUTO_ORBIT_MIN_CLEARANCE := 8.0
 const AUTO_ORBIT_TARGET_LASER_DISTANCE := 20.0
@@ -183,6 +183,13 @@ var mobile_perf_tractor_us := 0
 var mobile_perf_mining_us := 0
 var mobile_perf_camera_us := 0
 var mobile_render_viewport := RID()
+var mobile_mining_claim_calls := 0
+var mobile_mining_claim_failures := 0
+var mobile_mining_claim_us := 0
+var mobile_mining_claim_max_us := 0
+var mobile_mining_prepare_calls := 0
+var mobile_mining_prepare_us := 0
+var mobile_mining_prepare_max_us := 0
 # Passive mobile diagnostics. No updates to movement, physics, render behavior.
 # Keep frame-level results separate for idle, straight movement, and turning.
 var mobile_turn_phase := "idle"
@@ -642,7 +649,7 @@ func _instantiate_ship_part(record: Dictionary) -> void:
                 "next_range_check": 0.0,
                 "next_cell_search": 0.0,
                 "last_failed_revision": -1,
-                "last_failed_muzzle": Vector3.INF,
+                "next_cell_event_search": 0.0,
                 "next_obstruction_check": 0.0,
                 "cached_obstructed": false,
                 "beam": beam,
@@ -2116,6 +2123,28 @@ func _process(delta: float) -> void:
                 ]
             )
             _mobile_turn_profile_log()
+            AppLogger.event(
+                "MOBILE_MINING_WORK claim_calls=%d failed=%d claim_avg_ms=%.3f claim_max_ms=%.3f "
+                % [
+                    mobile_mining_claim_calls,
+                    mobile_mining_claim_failures,
+                    float(mobile_mining_claim_us) / maxi(1, mobile_mining_claim_calls) / 1000.0,
+                    float(mobile_mining_claim_max_us) / 1000.0,
+                ]
+                + "prepare_calls=%d prepare_avg_ms=%.3f prepare_max_ms=%.3f"
+                % [
+                    mobile_mining_prepare_calls,
+                    float(mobile_mining_prepare_us) / maxi(1, mobile_mining_prepare_calls) / 1000.0,
+                    float(mobile_mining_prepare_max_us) / 1000.0,
+                ]
+            )
+            mobile_mining_claim_calls = 0
+            mobile_mining_claim_failures = 0
+            mobile_mining_claim_us = 0
+            mobile_mining_claim_max_us = 0
+            mobile_mining_prepare_calls = 0
+            mobile_mining_prepare_us = 0
+            mobile_mining_prepare_max_us = 0
             mobile_perf_elapsed = 0.0
             mobile_perf_frames = 0
             mobile_perf_slow_frames = 0
@@ -3259,8 +3288,51 @@ func _claim_laser_mining_cell(
     var anchor := laser.get("anchor_cell", Vector3i.ZERO) as Vector3i
     var can_reach := func(position: Vector3) -> bool:
         return not _ship_blocks_segment(muzzle, position, anchor)
-    return asteroid.claim_mining_cell(
+    var mobile := _is_mobile_platform()
+    var start_us := Time.get_ticks_usec() if mobile else 0
+    var claim := asteroid.claim_mining_cell(
         pivot.get_instance_id(), muzzle, can_reach
+    )
+    if mobile:
+        mobile_mining_claim_calls += 1
+        var elapsed_us := Time.get_ticks_usec() - start_us
+        mobile_mining_claim_us += elapsed_us
+        mobile_mining_claim_max_us = maxi(mobile_mining_claim_max_us, elapsed_us)
+        if claim.is_empty():
+            mobile_mining_claim_failures += 1
+    return claim
+
+
+func _prepare_laser_mining_cell(
+    asteroid: SpaceAsteroid,
+    cell: Vector3i
+) -> Dictionary:
+    var mobile := _is_mobile_platform()
+    var start_us := Time.get_ticks_usec() if mobile else 0
+    var prepared := asteroid.prepare_detach_cell(cell)
+    if mobile:
+        var elapsed_us := Time.get_ticks_usec() - start_us
+        mobile_mining_prepare_calls += 1
+        mobile_mining_prepare_us += elapsed_us
+        mobile_mining_prepare_max_us = maxi(
+            mobile_mining_prepare_max_us, elapsed_us
+        )
+    return prepared
+
+
+# Moving/turning the ship must not bypass a failed assignment's cooldown.
+# Other lasers claiming work does not create additional available jobs.
+func _mining_cell_retry_due(
+    laser: Dictionary,
+    asteroid: SpaceAsteroid
+) -> bool:
+    if beam_time >= float(laser.get("next_cell_search", 0.0)):
+        return true
+    if beam_time < float(laser.get("next_cell_event_search", 0.0)):
+        return false
+    return (
+        asteroid.mining_availability_revision()
+        != int(laser.get("last_failed_revision", -1))
     )
 
 
@@ -3361,15 +3433,7 @@ func _update_mining_lasers(delta: float) -> void:
 
         var reserved_value = laser.get("reserved_cell", null)
         if not (reserved_value is Vector3i):
-            var muzzle := _laser_muzzle_world(pivot)
-            var revision := asteroid.mining_queue_revision()
-            if (
-                beam_time < float(laser.get("next_cell_search", 0.0))
-                and revision == int(laser.get("last_failed_revision", -1))
-                and muzzle.distance_squared_to(
-                    laser.get("last_failed_muzzle", Vector3.INF) as Vector3
-                ) < MINING_RETRY_MOVEMENT_SQUARED
-            ):
+            if not _mining_cell_retry_due(laser, asteroid):
                 beam.visible = false
                 _set_laser_status(laser_index, true, "")
                 mining_lasers[laser_index] = laser
@@ -3397,10 +3461,12 @@ func _update_mining_lasers(delta: float) -> void:
                 laser["next_cell_search"] = (
                     beam_time + MINING_CELL_RETRY_SECONDS
                 )
-                laser["last_failed_revision"] = (
-                    asteroid.mining_queue_revision()
+                laser["next_cell_event_search"] = (
+                    beam_time + MINING_CELL_EVENT_RETRY_SECONDS
                 )
-                laser["last_failed_muzzle"] = muzzle
+                laser["last_failed_revision"] = (
+                    asteroid.mining_availability_revision()
+                )
                 beam.visible = false
                 _set_laser_status(laser_index, true, "")
                 mining_lasers[laser_index] = laser
@@ -3410,6 +3476,7 @@ func _update_mining_lasers(delta: float) -> void:
                 selection.get("cell", Vector3i.ZERO) as Vector3i
             )
             laser["next_cell_search"] = 0.0
+            laser["next_cell_event_search"] = 0.0
             laser["last_failed_revision"] = -1
             laser["cached_obstructed"] = false
             laser["next_obstruction_check"] = 0.0
@@ -3420,7 +3487,7 @@ func _update_mining_lasers(delta: float) -> void:
         var prepared := laser.get("prepared_detach", {}) as Dictionary
 
         if fire_time >= LASER_PREPARE_SECONDS and prepared.is_empty():
-            prepared = asteroid.prepare_detach_cell(reserved_cell)
+            prepared = _prepare_laser_mining_cell(asteroid, reserved_cell)
             laser["prepared_detach"] = prepared
 
         var cell_position := asteroid.cell_world_position(reserved_cell)
@@ -3468,10 +3535,12 @@ func _update_mining_lasers(delta: float) -> void:
             laser["next_cell_search"] = (
                 beam_time + MINING_CELL_RETRY_SECONDS
             )
-            laser["last_failed_revision"] = (
-                asteroid.mining_queue_revision()
+            laser["next_cell_event_search"] = (
+                beam_time + MINING_CELL_EVENT_RETRY_SECONDS
             )
-            laser["last_failed_muzzle"] = muzzle
+            laser["last_failed_revision"] = (
+                asteroid.mining_availability_revision()
+            )
             _set_laser_status(laser_index, false, "Obstructed")
             beam.visible = false
             mining_lasers[laser_index] = laser
@@ -3487,7 +3556,7 @@ func _update_mining_lasers(delta: float) -> void:
 
             if fire_time >= LASER_MINING_SECONDS:
                 if prepared.is_empty():
-                    prepared = asteroid.prepare_detach_cell(reserved_cell)
+                    prepared = _prepare_laser_mining_cell(asteroid, reserved_cell)
                     laser["prepared_detach"] = prepared
 
                 if not prepared.is_empty():
@@ -3495,8 +3564,8 @@ func _update_mining_lasers(delta: float) -> void:
                     if detached.is_empty():
                         # A prior commit by another worker invalidated only
                         # the prepared geometry, not our voxel reservation.
-                        var refreshed := asteroid.prepare_detach_cell(
-                            reserved_cell
+                        var refreshed := _prepare_laser_mining_cell(
+                            asteroid, reserved_cell
                         )
                         if refreshed.is_empty():
                             _release_laser_mining_assignment(laser)
