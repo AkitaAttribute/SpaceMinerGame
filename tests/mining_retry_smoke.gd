@@ -16,7 +16,7 @@ func _run() -> void:
     if not (script_value is GDScript):
         _fail("simulation script unavailable")
         return
-    var simulation := (script_value as GDScript).new()
+    var simulation: Node3D = (script_value as GDScript).new()
     var asteroid := SpaceAsteroid.new()
     asteroid.sync_to_physics = false
     asteroid.configure("retry-test", Vector3(0.0, 0.0, -20.0), 106, 3)
