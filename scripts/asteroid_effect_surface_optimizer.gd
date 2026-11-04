@@ -23,6 +23,7 @@ const EFFECT_COUNT := 5
 
 var _scene_id := 0
 var _optimized_versions: Dictionary = {}
+var _dirty_asteroids: Dictionary = {}
 var _single_pass_material: ShaderMaterial
 var _logged_initial_summary := false
 var _optimized_total := 0
@@ -42,6 +43,14 @@ func _ready() -> void:
     _single_pass_material.shader = _create_single_pass_shader()
 
 
+# After initial scene construction, the presenter identifies changed meshes.
+# Avoid scanning 420 already optimized asteroids per render frame.
+func mark_asteroid_mesh_dirty(asteroid: Object) -> void:
+    if asteroid == null or not is_instance_valid(asteroid):
+        return
+    _dirty_asteroids[asteroid.get_instance_id()] = asteroid
+
+
 func _process(delta: float) -> void:
     var mobile := OS.has_feature("android") or OS.has_feature("ios") or OS.has_feature("mobile")
     var profile_start := Time.get_ticks_usec() if mobile else 0
@@ -49,6 +58,7 @@ func _process(delta: float) -> void:
     if scene == null:
         _scene_id = 0
         _optimized_versions.clear()
+        _dirty_asteroids.clear()
         _logged_initial_summary = false
         _optimized_total = 0
         return
@@ -57,6 +67,7 @@ func _process(delta: float) -> void:
     if scene_id != _scene_id:
         _scene_id = scene_id
         _optimized_versions.clear()
+        _dirty_asteroids.clear()
         _logged_initial_summary = false
         _optimized_total = 0
 
@@ -75,7 +86,12 @@ func _process(delta: float) -> void:
 
     var optimized_this_frame := 0
     var asteroids := asteroids_value as Dictionary
-    for asteroid_value in asteroids.values():
+    var candidates := (
+        asteroids.values()
+        if not _logged_initial_summary
+        else _dirty_asteroids.values()
+    )
+    for asteroid_value in candidates:
         if optimized_this_frame >= MAX_OPTIMIZATIONS_PER_FRAME:
             break
         if not (asteroid_value is Object) or not is_instance_valid(asteroid_value):
@@ -97,10 +113,12 @@ func _process(delta: float) -> void:
             _optimized_versions.has(asteroid_id)
             and int(_optimized_versions[asteroid_id]) == geometry_version
         ):
+            _dirty_asteroids.erase(asteroid_id)
             continue
 
         if _optimize_asteroid_mesh(asteroid, presenter):
             _optimized_versions[asteroid_id] = geometry_version
+            _dirty_asteroids.erase(asteroid_id)
             optimized_this_frame += 1
             _optimized_total += 1
 
