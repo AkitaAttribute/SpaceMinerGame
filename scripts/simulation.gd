@@ -183,6 +183,13 @@ var mobile_perf_tractor_us := 0
 var mobile_perf_mining_us := 0
 var mobile_perf_camera_us := 0
 var mobile_render_viewport := RID()
+var mobile_mining_claim_calls := 0
+var mobile_mining_claim_failures := 0
+var mobile_mining_claim_us := 0
+var mobile_mining_claim_max_us := 0
+var mobile_mining_prepare_calls := 0
+var mobile_mining_prepare_us := 0
+var mobile_mining_prepare_max_us := 0
 # Passive mobile diagnostics. No updates to movement, physics, render behavior.
 # Keep frame-level results separate for idle, straight movement, and turning.
 var mobile_turn_phase := "idle"
