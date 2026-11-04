@@ -254,6 +254,11 @@ func _ensure_asteroid_mesh_current(asteroid: Object) -> void:
         _asteroid_effect_maps[asteroid_id] as Dictionary
     )
     _asteroid_geometry_versions[asteroid_id] = geometry_version
+    # Notify the final single-pass optimizer only when geometry actually
+    # changes. Its initial preload remains unchanged.
+    var optimizer := get_node_or_null("/root/AsteroidEffectSurfaceOptimizer")
+    if optimizer != null and optimizer.has_method("mark_asteroid_mesh_dirty"):
+        optimizer.mark_asteroid_mesh_dirty(asteroid)
 
 
 func _build_effect_map(asteroid: Object) -> Dictionary:
