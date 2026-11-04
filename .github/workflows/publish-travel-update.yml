@@ -1,0 +1,144 @@
+name: Publish Android Travel Diagnostic In-App Update
+
+on:
+  push:
+    branches:
+      - diagnostics/travel-regression-ab
+    paths:
+      - .github/workflows/publish-travel-update.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish-travel-patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Godot 4.7.1 and official export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o /tmp/godot.zip https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          unzip -q /tmp/godot.zip -d /tmp
+          chmod +x /tmp/Godot_v4.7.1-stable_linux.x86_64
+          sudo mv /tmp/Godot_v4.7.1-stable_linux.x86_64 /usr/local/bin/godot
+          curl -fL --retry 3 -o /tmp/templates.tpz https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_export_templates.tpz
+          mkdir -p /tmp/export-templates
+          unzip -q /tmp/templates.tpz -d /tmp/export-templates
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.7.1.stable"
+          cp -R /tmp/export-templates/templates/* "$HOME/.local/share/godot/export_templates/4.7.1.stable/"
+          godot --version
+
+      - name: Verify production manifest and diagnostic build number
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/previous-manifest
+          gh release download pr-1-preview --repo "$GITHUB_REPOSITORY" \
+            --pattern manifest.json --dir /tmp/previous-manifest
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          previous = json.loads(Path('/tmp/previous-manifest/manifest.json').read_text())
+          if previous.get('channel') != 'pr-1':
+              raise SystemExit('Unexpected updater channel')
+          if previous.get('build') != 490:
+              raise SystemExit(f"Refusing to overwrite unexpected published build {previous.get('build')}; requires explicit review")
+          if 'android' not in previous or 'windows' not in previous:
+              raise SystemExit('Current production manifest missing required platform entry')
+          print('Verified current public build 490; preparing diagnostic patch 491 for Android only')
+          PY
+
+      - name: Stamp diagnostic patch resource version
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i 's|config/version="0.1.0"|config/version="0.1.491"|' project.godot
+          grep -F 'config/version="0.1.491"' project.godot
+
+      - name: Compile all project resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          godot --headless --path . --editor --import 2>&1 | tee /tmp/godot-import.log
+          if grep -E 'SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script' /tmp/godot-import.log; then exit 1; fi
+
+      - name: Verify A/B phase restoration and mining
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 40s godot --headless --path . --script res://tests/travel_ab_smoke.gd 2>&1 | tee /tmp/travel-ab.log
+          grep -q TRAVEL_AB_SMOKE_PASS /tmp/travel-ab.log
+          timeout 30s godot --headless --path . --script res://tests/mining_queue_smoke.gd 2>&1 | tee /tmp/mining-queue.log
+          grep -q MINING_QUEUE_SMOKE_PASS /tmp/mining-queue.log
+          if grep -E 'SCRIPT ERROR:|Parse Error:|ERROR:' /tmp/travel-ab.log /tmp/mining-queue.log; then exit 1; fi
+
+      - name: Export signed-verified Android diagnostic resource pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          godot --headless --path . --export-pack Android build/SpaceMinerGame-Android.pck 2>&1 | tee /tmp/godot-export.log
+          if grep -E 'SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script' /tmp/godot-export.log; then exit 1; fi
+          test -s build/SpaceMinerGame-Android.pck
+          ls -lh build/SpaceMinerGame-Android.pck
+
+      - name: Prepare and verify Android-only build 491 manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          p = Path('build/SpaceMinerGame-Android.pck')
+          base = 'https://github.com/AkitaAttribute/SpaceMinerGame/releases/download/pr-1-preview'
+          manifest = {
+              'channel': 'pr-1',
+              'build': 491,
+              # Intentionally omit Windows. The already installed Windows
+              # updater ignores platformless manifests; do not roll out an
+              # Android-only diagnostic experiment to desktop users.
+              'android': {
+                  'url': f'{base}/SpaceMinerGame-Android.pck',
+                  'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),
+                  'bytes': p.stat().st_size,
+              },
+              'commit': 'travel-regression-ab',
+              'note': 'Android diagnostic A/B probe; revert by installing next regular preview build >=492',
+          }
+          Path('build/manifest.json').write_text(
+              json.dumps(manifest, indent=2) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(manifest, indent=2))
+          assert manifest['build'] > 490
+          assert len(manifest['android']['sha256']) == 64
+          PY
+
+      - name: Publish pack first, manifest last
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload pr-1-preview build/SpaceMinerGame-Android.pck \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload pr-1-preview build/manifest.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+          mkdir -p /tmp/published
+          gh release download pr-1-preview --repo "$GITHUB_REPOSITORY" \
+            --pattern manifest.json --dir /tmp/published
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          generated = json.loads(Path('build/manifest.json').read_text())
+          published = json.loads(Path('/tmp/published/manifest.json').read_text())
+          assert published == generated, 'Published manifest does not match generated manifest'
+          assert published['build'] == 491
+          assert published['channel'] == 'pr-1'
+          assert 'windows' not in published
+          print('PUBLISHED_ANDROID_DIAGNOSTIC_491_OK')
+          PY

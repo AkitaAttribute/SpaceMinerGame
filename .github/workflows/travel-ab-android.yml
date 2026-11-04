@@ -1,0 +1,99 @@
+name: Android Travel Regression A-B Preview
+
+on:
+  pull_request:
+    branches:
+      - prototype/ship-builder-first-pass
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-travel-diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java 17 for Android
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install Godot 4.7.1 and export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 -o /tmp/godot.zip https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          unzip -q /tmp/godot.zip -d /tmp
+          chmod +x /tmp/Godot_v4.7.1-stable_linux.x86_64
+          sudo mv /tmp/Godot_v4.7.1-stable_linux.x86_64 /usr/local/bin/godot
+          curl -fL --retry 3 -o /tmp/templates.tpz https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_export_templates.tpz
+          mkdir -p /tmp/export-templates
+          unzip -q /tmp/templates.tpz -d /tmp/export-templates
+          mkdir -p "$HOME/.local/share/godot/export_templates/4.7.1.stable"
+          cp -R /tmp/export-templates/templates/* "$HOME/.local/share/godot/export_templates/4.7.1.stable/"
+          godot --version
+      - name: Restore same Android development signing key as normal build
+        id: signing
+        uses: actions/cache/restore@v4
+        with:
+          path: .android-signing
+          key: space-miner-android-development-signing-v1
+      - name: Confirm signing key (preserves installed game saves)
+        shell: bash
+        run: |
+          test -s .android-signing/space-miner-development.keystore
+          "$JAVA_HOME/bin/keytool" -list -keystore .android-signing/space-miner-development.keystore -storepass android -alias spaceminerdevelopment
+      - name: Stamp version one above most recent regular build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          regular_build=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/windows-build.yml/runs?branch=prototype%2Fship-builder-first-pass&per_page=5" --jq '.workflow_runs | map(select(.conclusion == "success")) | map(.run_number) | max')
+          if [[ ! "$regular_build" =~ ^[0-9]+$ ]]; then exit 1; fi
+          version_code=$((regular_build+1))
+          sed -i -E "s/^version\/code=[0-9]+$/version\/code=${version_code}/" export_presets.cfg
+          sed -i -E "s/^version\/name=\"[^\"]*\"$/version\/name=\"0.1.${version_code}-travel-test\"/" export_presets.cfg
+          grep -E '^version/(code|name)=' export_presets.cfg
+          echo "Travel diagnostic version_code=${version_code}; main release remains unchanged."
+      - name: Compile Godot project
+        shell: bash
+        run: |
+          set -euo pipefail
+          godot --headless --path . --editor --import 2>&1 | tee /tmp/godot-import.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script" /tmp/godot-import.log; then exit 1; fi
+      - name: Test reversal of all A/B diagnostic changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 40s godot --headless --path . --script res://tests/travel_ab_smoke.gd 2>&1 | tee /tmp/travel-ab-smoke.log
+          grep -q TRAVEL_AB_SMOKE_PASS /tmp/travel-ab-smoke.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|ERROR:" /tmp/travel-ab-smoke.log; then exit 1; fi
+      - name: Test original mining regression behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s godot --headless --path . --script res://tests/mining_queue_smoke.gd 2>&1 | tee /tmp/mining-smoke.log
+          grep -q MINING_QUEUE_SMOKE_PASS /tmp/mining-smoke.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|ERROR:" /tmp/mining-smoke.log; then exit 1; fi
+      - name: Export separate Android travel diagnostic APK
+        shell: bash
+        env:
+          GODOT_ANDROID_KEYSTORE_DEBUG_PATH: ${{ github.workspace }}/.android-signing/space-miner-development.keystore
+          GODOT_ANDROID_KEYSTORE_DEBUG_USER: spaceminerdevelopment
+          GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD: android
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" build/SpaceMinerGame-Android-Travel-Diagnostic.apk 2>&1 | tee /tmp/godot-export.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|Compile Error:|Failed to load script" /tmp/godot-export.log; then exit 1; fi
+          test -s build/SpaceMinerGame-Android-Travel-Diagnostic.apk
+      - name: Upload diagnostic APK (no preview release or updater modified)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpaceMinerGame-Android-Travel-AB
+          path: build/SpaceMinerGame-Android-Travel-Diagnostic.apk
+          retention-days: 14
+          if-no-files-found: error
