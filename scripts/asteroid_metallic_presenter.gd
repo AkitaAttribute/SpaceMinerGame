@@ -46,6 +46,7 @@ var _asteroid_geometry_versions: Dictionary = {}
 var _patched_chunks: Dictionary = {}
 var _laser_effect_cache: Dictionary = {}
 var _far_visual_spin: Dictionary = {}
+var _diagnostic_pause_far_spin := false
 
 # Passive mobile profiling; these counters never change presentation behavior.
 var _mobile_process_count := 0
@@ -126,6 +127,8 @@ func _process(_delta: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
+    if _diagnostic_pause_far_spin:
+        return
     var scene := get_tree().current_scene
     if scene == null or scene.get("asteroid_loading_in_progress") == true:
         return
