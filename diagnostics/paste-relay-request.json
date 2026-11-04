@@ -1,6 +1,5 @@
 {
-  "url": "",
-  "status": "read_cleanup_requested",
-  "last_relay_run_id": 41745341653,
-  "validation": "Read November 3 2026 19:13 mobile performance diagnostics: 420 asteroids; idle mining 0.125-0.129 ms, active mining 1.26-2.04 ms; continued low FPS from other work"
+  "url": "https://pastebin.ai/p/GTGBEEEAi",
+  "status": "requested",
+  "requested_at": "2026-11-04"
 }
