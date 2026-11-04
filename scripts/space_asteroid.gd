@@ -42,6 +42,9 @@ var _geometry_version := 0
 var _mining_assignments: Dictionary = {}
 var _mining_cell_owners: Dictionary = {}
 var _mining_queue_revision := 0
+# Only wake waiting lasers when mining work becomes available. Acquiring
+# another laser's reservation *reduces* availability and must not wake them.
+var _mining_availability_revision := 0
 var _visual: MeshInstance3D
 var _surface_material: StandardMaterial3D
 var _metallic_material: StandardMaterial3D
@@ -72,6 +75,7 @@ func configure(
     _mining_assignments.clear()
     _mining_cell_owners.clear()
     _mining_queue_revision = 0
+    _mining_availability_revision = 0
     orbit_enabled = false
     _collision_active = true
     _far_orbit_accum = 0.0
@@ -302,6 +306,10 @@ func mining_queue_revision() -> int:
     return _mining_queue_revision
 
 
+func mining_availability_revision() -> int:
+    return _mining_availability_revision
+
+
 func mining_assignment_count() -> int:
     return _mining_assignments.size()
 
@@ -313,6 +321,7 @@ func release_mining_cell(worker_id: int) -> void:
     _mining_assignments.erase(worker_id)
     _mining_cell_owners.erase(cell)
     _mining_queue_revision += 1
+    _mining_availability_revision += 1
 
 
 func claim_mining_cell(
@@ -447,6 +456,8 @@ func commit_prepared_detach(prepared: Dictionary) -> Dictionary:
         release_mining_cell(int(_mining_cell_owners[cell]))
     _removed_cells[_cell_key(cell)] = true
     _mining_queue_revision += 1
+    # Removing a voxel can expose new mining faces and therefore new jobs.
+    _mining_availability_revision += 1
     _remaining_cells = maxi(0, _remaining_cells - 1)
     _geometry_version += 1
 
