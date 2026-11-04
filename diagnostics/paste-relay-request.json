@@ -1,6 +1,5 @@
 {
-  "url": "",
-  "status": "read_cleanup_requested",
-  "last_relay_run_id": 41871870016,
-  "validation": "Analyzed November 4 mobile log after retry change: claims up to 55ms, effects optimizer scans all 420 when unchanged, severe FPS variation with turning"
+  "url": "https://pastebin.ai/p/FoRZdb6k6",
+  "status": "requested",
+  "requested_at": "2026-11-04"
 }
