@@ -3460,7 +3460,7 @@ func _update_mining_lasers(delta: float) -> void:
         var prepared := laser.get("prepared_detach", {}) as Dictionary
 
         if fire_time >= LASER_PREPARE_SECONDS and prepared.is_empty():
-            prepared = asteroid.prepare_detach_cell(reserved_cell)
+            prepared = _prepare_laser_mining_cell(asteroid, reserved_cell)
             laser["prepared_detach"] = prepared
 
         var cell_position := asteroid.cell_world_position(reserved_cell)
@@ -3529,7 +3529,7 @@ func _update_mining_lasers(delta: float) -> void:
 
             if fire_time >= LASER_MINING_SECONDS:
                 if prepared.is_empty():
-                    prepared = asteroid.prepare_detach_cell(reserved_cell)
+                    prepared = _prepare_laser_mining_cell(asteroid, reserved_cell)
                     laser["prepared_detach"] = prepared
 
                 if not prepared.is_empty():
@@ -3537,8 +3537,8 @@ func _update_mining_lasers(delta: float) -> void:
                     if detached.is_empty():
                         # A prior commit by another worker invalidated only
                         # the prepared geometry, not our voxel reservation.
-                        var refreshed := asteroid.prepare_detach_cell(
-                            reserved_cell
+                        var refreshed := _prepare_laser_mining_cell(
+                            asteroid, reserved_cell
                         )
                         if refreshed.is_empty():
                             _release_laser_mining_assignment(laser)
