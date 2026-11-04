@@ -13,6 +13,7 @@ const MINING_TARGET_RETRY_SECONDS := 0.50
 const MINING_CELL_RETRY_SECONDS := 1.50
 const MINING_CELL_EVENT_RETRY_SECONDS := 0.25
 const MINING_RANGE_CHECK_SECONDS := 0.20
+const MINING_PROXIMITY_SCAN_INTERVAL := 0.20
 
 const AUTO_ORBIT_MIN_CLEARANCE := 8.0
 const AUTO_ORBIT_TARGET_LASER_DISTANCE := 20.0
@@ -92,10 +93,18 @@ var _simulation_loading_screen: Node
 var asteroid_ring_ready := false
 var _load_start_usec := 0
 var mining_lasers: Array[Dictionary] = []
-# Maintained by a ship-centered Area3D, rather than scanning the entire ring
-# separately for each targetless laser at physics frequency.
+# One shared ship-centered distance cache for every laser. The previous
+# moving Area3D caused severe Android frame stalls even when lasers were idle.
+# 420 squared-distance checks every 0.2s is substantially cheaper and does not
+# register 40 ship colliders and asteroid bodies with the physics broad phase.
 var nearby_mining_asteroids: Dictionary = {}
 var nearby_mining_revision := 0
+var mining_proximity_radius := 0.0
+var mining_proximity_scan_elapsed := 0.0
+var mobile_proximity_scan_count := 0
+var mobile_proximity_scan_us := 0
+var mobile_proximity_scan_max_us := 0
+var mobile_proximity_scan_changes := 0
 var thruster_particles: Array[GPUParticles3D] = []
 var tractor_chunks: Array[Dictionary] = []
 var ship_cell_boxes: Array[Dictionary] = []
@@ -2125,6 +2134,25 @@ func _process(delta: float) -> void:
             )
             _mobile_turn_profile_log()
             AppLogger.event(
+                "MOBILE_PROXIMITY_SCAN scans=%d avg_ms=%.3f max_ms=%.3f "
+                % [
+                    mobile_proximity_scan_count,
+                    float(mobile_proximity_scan_us)
+                    / maxi(1, mobile_proximity_scan_count) / 1000.0,
+                    float(mobile_proximity_scan_max_us) / 1000.0,
+                ]
+                + "changes=%d nearby=%d radius=%.2f"
+                % [
+                    mobile_proximity_scan_changes,
+                    nearby_mining_asteroids.size(),
+                    mining_proximity_radius,
+                ]
+            )
+            mobile_proximity_scan_count = 0
+            mobile_proximity_scan_us = 0
+            mobile_proximity_scan_max_us = 0
+            mobile_proximity_scan_changes = 0
+            AppLogger.event(
                 "MOBILE_MINING_WORK claim_calls=%d failed=%d claim_avg_ms=%.3f claim_max_ms=%.3f "
                 % [
                     mobile_mining_claim_calls,
@@ -2194,6 +2222,11 @@ func _physics_process(delta: float) -> void:
     if menu_open:
         _set_thruster_emission(false)
         return
+
+    # Shared distance cache replaces moving Area3D's physics broadphase.
+    # A scan is performed no more than five times per second, regardless of
+    # the number of lasers. Both Windows and Android use the same path.
+    _refresh_mining_proximity(delta)
 
     # Instrument actual mobile physics work with no change to its call order.
     # Keep this enabled even when the debug performance overlay is hidden.
@@ -3213,9 +3246,9 @@ func _spawn_asteroid(
     asteroids[key] = asteroid
 
 
-# Collision detection is shared by all lasers. Only an asteroid's physics body
-# participates in this broad phase; hull occlusion still checks ship builder
-# cells in _ship_blocks_segment, never all asteroids.
+# Establish the shared proximity radius once. Avoid creating a moving Area3D:
+# in Android A/B tests it reduced normal game performance to 6–32 FPS,
+# recovering to 60 FPS when its monitoring was turned off.
 func _build_mining_detection_area() -> void:
     if mining_lasers.is_empty():
         return
@@ -3231,21 +3264,70 @@ func _build_mining_detection_area() -> void:
                 + LASER_BARREL_LENGTH + 2.0
             )
 
-    var proximity := Area3D.new()
-    proximity.name = "MiningProximity"
-    proximity.collision_layer = 0
-    proximity.collision_mask = 1
-    proximity.monitorable = false
-    proximity.monitoring = true
+    mining_proximity_radius = radius
+    mining_proximity_scan_elapsed = MINING_PROXIMITY_SCAN_INTERVAL
+    AppLogger.event(
+        "MINING_PROXIMITY mode=shared_distance_scan interval_s=%.2f radius=%.2f"
+        % [MINING_PROXIMITY_SCAN_INTERVAL, mining_proximity_radius]
+    )
 
-    var sphere := SphereShape3D.new()
-    sphere.radius = radius
-    var collision_shape := CollisionShape3D.new()
-    collision_shape.shape = sphere
-    proximity.add_child(collision_shape)
-    ship_body.add_child(proximity)
-    proximity.body_entered.connect(_on_mining_asteroid_entered)
-    proximity.body_exited.connect(_on_mining_asteroid_exited)
+
+func _refresh_mining_proximity(delta: float, force := false) -> void:
+    if mining_proximity_radius <= 0.0:
+        return
+    if ship_body == null or not is_instance_valid(ship_body):
+        return
+    mining_proximity_scan_elapsed += delta
+    if (
+        not force
+        and mining_proximity_scan_elapsed < MINING_PROXIMITY_SCAN_INTERVAL
+    ):
+        return
+    mining_proximity_scan_elapsed = 0.0
+
+    var mobile := _is_mobile_platform()
+    var start_us := Time.get_ticks_usec() if mobile else 0
+    var origin := ship_body.global_position
+    var present_ids: Dictionary = {}
+    for value in asteroids.values():
+        if not (value is SpaceAsteroid) or not is_instance_valid(value):
+            continue
+        var asteroid := value as SpaceAsteroid
+        if not asteroid.has_cells():
+            continue
+
+        # Previous Area3D checked the asteroid's collision volume. Include
+        # half the asteroid's grid diagonal so targets at the edge of the
+        # radius remain candidates. The laser performs exact range checks.
+        var half_diagonal := float(asteroid.grid_size) * 0.866025404
+        var distance_limit := mining_proximity_radius + half_diagonal
+        if (
+            origin.distance_squared_to(asteroid.global_position)
+            > distance_limit * distance_limit
+        ):
+            continue
+        var id := asteroid.get_instance_id()
+        present_ids[id] = true
+        if not nearby_mining_asteroids.has(id):
+            nearby_mining_asteroids[id] = asteroid
+            nearby_mining_revision += 1
+            if mobile:
+                mobile_proximity_scan_changes += 1
+
+    for id in nearby_mining_asteroids.keys():
+        if not present_ids.has(id):
+            nearby_mining_asteroids.erase(id)
+            nearby_mining_revision += 1
+            if mobile:
+                mobile_proximity_scan_changes += 1
+
+    if mobile:
+        var elapsed_us := Time.get_ticks_usec() - start_us
+        mobile_proximity_scan_count += 1
+        mobile_proximity_scan_us += elapsed_us
+        mobile_proximity_scan_max_us = maxi(
+            mobile_proximity_scan_max_us, elapsed_us
+        )
 
 
 func _on_mining_asteroid_entered(body: Node3D) -> void:
