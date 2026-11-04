@@ -99,6 +99,7 @@ var nearby_mining_revision := 0
 var thruster_particles: Array[GPUParticles3D] = []
 var tractor_chunks: Array[Dictionary] = []
 var ship_cell_boxes: Array[Dictionary] = []
+var ship_cell_boxes_by_coord: Dictionary = {}
 
 var model_center := Vector3.ZERO
 var model_radius := 2.0
@@ -582,10 +583,10 @@ func _load_ship() -> void:
 
     for record in occupied_records:
         var center := (record["center"] as Vector3) - model_center
-        ship_cell_boxes.append({
-            "cell": record["cell"],
-            "aabb": AABB(center - Vector3.ONE * 0.5, Vector3.ONE),
-        })
+        var cell := record["cell"] as Vector3i
+        var box := AABB(center - Vector3.ONE * 0.5, Vector3.ONE)
+        ship_cell_boxes.append({"cell": cell, "aabb": box})
+        ship_cell_boxes_by_coord[cell] = box
 
     for record in part_records:
         _instantiate_ship_part(record)
@@ -3738,6 +3739,9 @@ func _laser_muzzle_world(pivot: Node3D) -> Vector3:
     return pivot.global_position + pivot.global_basis.y.normalized() * LASER_BARREL_LENGTH
 
 
+# The builder has an integer voxel grid. Trace only grid cells actually
+# crossed by the ray instead of testing every ship part against every asteroid
+# surface voxel. The final AABB test remains identical to the old logic.
 func _ship_blocks_segment(
     world_from: Vector3,
     world_to: Vector3,
@@ -3745,16 +3749,122 @@ func _ship_blocks_segment(
 ) -> bool:
     var local_from := ship_visual_root.to_local(world_from)
     var local_to := ship_visual_root.to_local(world_to)
+    if ship_cell_boxes_by_coord.is_empty():
+        return _ship_blocks_segment_brute_local(
+            local_from, local_to, laser_cell
+        )
 
+    # Builder cell (x,y,z) maps to local rendering coordinates (x,z,y).
+    var start := Vector3(
+        local_from.x + model_center.x,
+        local_from.z + model_center.z,
+        local_from.y + model_center.y
+    )
+    var finish := Vector3(
+        local_to.x + model_center.x,
+        local_to.z + model_center.z,
+        local_to.y + model_center.y
+    )
+    var direction := finish - start
+    var cell := Vector3i(
+        int(floor(start.x)),
+        int(floor(start.y)),
+        int(floor(start.z))
+    )
+
+    var step := Vector3i(
+        1 if direction.x > 0.0 else -1 if direction.x < 0.0 else 0,
+        1 if direction.y > 0.0 else -1 if direction.y < 0.0 else 0,
+        1 if direction.z > 0.0 else -1 if direction.z < 0.0 else 0
+    )
+    var t_max := Vector3(INF, INF, INF)
+    var t_delta := Vector3(INF, INF, INF)
+
+    for axis in range(3):
+        var source := _vector_component(start, axis)
+        var component := _vector_component(direction, axis)
+        var coordinate := _cell_coord_component(cell, axis)
+        if absf(component) < 0.000001:
+            # A ray exactly on a shared voxel face can touch either neighbor.
+            # Preserve the old intersection semantics in this rare case.
+            if absf(source - roundf(source)) < 0.000001:
+                return _ship_blocks_segment_brute_local(
+                    local_from, local_to, laser_cell
+                )
+            continue
+        var boundary := (
+            float(coordinate + 1) if component > 0.0
+            else float(coordinate)
+        )
+        var crossing := (boundary - source) / component
+        var interval := absf(1.0 / component)
+        match axis:
+            0:
+                t_max.x = crossing
+                t_delta.x = interval
+            1:
+                t_max.y = crossing
+                t_delta.y = interval
+            _:
+                t_max.z = crossing
+                t_delta.z = interval
+
+    for _index in range(256):
+        if cell != laser_cell and ship_cell_boxes_by_coord.has(cell):
+            var box := ship_cell_boxes_by_coord[cell] as AABB
+            if _segment_intersects_aabb(local_from, local_to, box):
+                return true
+
+        var next_t := minf(t_max.x, minf(t_max.y, t_max.z))
+        if next_t > 1.0 or next_t == INF:
+            return false
+
+        var cross_x := absf(t_max.x - next_t) < 0.000001
+        var cross_y := absf(t_max.y - next_t) < 0.000001
+        var cross_z := absf(t_max.z - next_t) < 0.000001
+        if int(cross_x) + int(cross_y) + int(cross_z) > 1:
+            # On grid edges/corners a line can touch more than one voxel.
+            # Exact fallback avoids missing grazing intersections.
+            return _ship_blocks_segment_brute_local(
+                local_from, local_to, laser_cell
+            )
+        if cross_x:
+            cell.x += step.x
+            t_max.x += t_delta.x
+        elif cross_y:
+            cell.y += step.y
+            t_max.y += t_delta.y
+        else:
+            cell.z += step.z
+            t_max.z += t_delta.z
+
+    return _ship_blocks_segment_brute_local(
+        local_from, local_to, laser_cell
+    )
+
+
+func _cell_coord_component(cell: Vector3i, axis: int) -> int:
+    match axis:
+        0:
+            return cell.x
+        1:
+            return cell.y
+        _:
+            return cell.z
+
+
+func _ship_blocks_segment_brute_local(
+    local_from: Vector3,
+    local_to: Vector3,
+    laser_cell: Vector3i
+) -> bool:
     for record in ship_cell_boxes:
         var cell := record["cell"] as Vector3i
         if cell == laser_cell:
             continue
-
         var box := record["aabb"] as AABB
         if _segment_intersects_aabb(local_from, local_to, box):
             return true
-
     return false
 
 
