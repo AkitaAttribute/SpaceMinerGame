@@ -2123,6 +2123,28 @@ func _process(delta: float) -> void:
                 ]
             )
             _mobile_turn_profile_log()
+            AppLogger.event(
+                "MOBILE_MINING_WORK claim_calls=%d failed=%d claim_avg_ms=%.3f claim_max_ms=%.3f "
+                % [
+                    mobile_mining_claim_calls,
+                    mobile_mining_claim_failures,
+                    float(mobile_mining_claim_us) / maxi(1, mobile_mining_claim_calls) / 1000.0,
+                    float(mobile_mining_claim_max_us) / 1000.0,
+                ]
+                + "prepare_calls=%d prepare_avg_ms=%.3f prepare_max_ms=%.3f"
+                % [
+                    mobile_mining_prepare_calls,
+                    float(mobile_mining_prepare_us) / maxi(1, mobile_mining_prepare_calls) / 1000.0,
+                    float(mobile_mining_prepare_max_us) / 1000.0,
+                ]
+            )
+            mobile_mining_claim_calls = 0
+            mobile_mining_claim_failures = 0
+            mobile_mining_claim_us = 0
+            mobile_mining_claim_max_us = 0
+            mobile_mining_prepare_calls = 0
+            mobile_mining_prepare_us = 0
+            mobile_mining_prepare_max_us = 0
             mobile_perf_elapsed = 0.0
             mobile_perf_frames = 0
             mobile_perf_slow_frames = 0
