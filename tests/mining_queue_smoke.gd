@@ -73,8 +73,8 @@ func _run() -> void:
         _fail("released work could not be reassigned")
         return
 
-    # Check that Area3D handles broad phase once for the ship; the ship's
-    # own collision layer must not become an asteroid candidate.
+    # Shared distance cache must retain nearby asteroids without any moving
+    # Area3D, and must not include the ship or distant bodies.
     var script = load("res://scripts/simulation.gd")
     if not (script is GDScript):
         _fail("simulation script unavailable")
@@ -84,31 +84,49 @@ func _run() -> void:
     ship.name = "TestShip"
     get_root().add_child(ship)
     simulation.set("ship_body", ship)
+    simulation.set("asteroids", {"first": asteroid, "second": other})
     var pivot := Node3D.new()
     ship.add_child(pivot)
     var lasers: Array[Dictionary] = [{"pivot": pivot}]
     simulation.set("mining_lasers", lasers)
     simulation.call("_build_mining_detection_area")
 
-    for i in range(4):
-        await physics_frame
+    if ship.get_node_or_null("MiningProximity") != null:
+        _fail("mining cache reintroduced a physics Area3D")
+        return
+
+    simulation.call("_refresh_mining_proximity", 0.20, true)
     var nearby := simulation.get("nearby_mining_asteroids") as Dictionary
     if not nearby.has(asteroid.get_instance_id()):
-        _fail("near asteroid was not registered by the ship Area3D")
+        _fail("near asteroid missing from shared distance cache")
         return
     if nearby.has(other.get_instance_id()):
-        _fail("out-of-range asteroid was registered by the ship Area3D")
+        _fail("out-of-range asteroid added to distance cache")
+        return
+    var first_revision := int(simulation.get("nearby_mining_revision"))
+    simulation.call("_refresh_mining_proximity", 0.03)
+    if int(simulation.get("nearby_mining_revision")) != first_revision:
+        _fail("cache revision changed without a proximity transition")
         return
 
     asteroid.global_position = Vector3(0, 0, -100)
-    for i in range(4):
-        await physics_frame
+    simulation.call("_refresh_mining_proximity", 0.20, true)
     nearby = simulation.get("nearby_mining_asteroids") as Dictionary
     if nearby.has(asteroid.get_instance_id()):
-        _fail("departed asteroid remained in proximity registry")
+        _fail("departed asteroid remained in distance cache")
         return
 
-    print("MINING_QUEUE_SMOKE_PASS 20 unique jobs; multi-asteroid; proximity entry/exit")
+    other.global_position = Vector3(0, 0, -30)
+    simulation.call("_refresh_mining_proximity", 0.20, true)
+    nearby = simulation.get("nearby_mining_asteroids") as Dictionary
+    if not nearby.has(other.get_instance_id()):
+        _fail("arriving asteroid was not registered")
+        return
+    if nearby.has(ship.get_instance_id()):
+        _fail("ship was incorrectly registered as an asteroid")
+        return
+
+    print("MINING_QUEUE_SMOKE_PASS 20 unique jobs; multi-asteroid; distance-cache entry/exit; no physics Area3D")
     simulation.free()
     ship.free()
     asteroid.free()

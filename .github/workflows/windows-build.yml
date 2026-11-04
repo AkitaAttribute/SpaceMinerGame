@@ -134,7 +134,7 @@ jobs:
 
           path = Path("project.godot")
           old = 'config/version="0.1.0"'
-          new = 'config/version="0.1.%s"' % os.environ["GITHUB_RUN_NUMBER"]
+          new = 'config/version="0.1.%s"' % (int(os.environ["GITHUB_RUN_NUMBER"]) + 1)
           data = path.read_text(encoding="utf-8")
           if old not in data:
               raise RuntimeError("Missing embedded version setting.")
@@ -299,8 +299,8 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          version_code="${GITHUB_RUN_NUMBER}"
-          version_name="0.1.${GITHUB_RUN_NUMBER}"
+          version_code="$((GITHUB_RUN_NUMBER + 1))"
+          version_name="0.1.${version_code}"
           sed -i -E "s/^version\/code=[0-9]+$/version\/code=${version_code}/" export_presets.cfg
           sed -i -E "s/^version\/name=\"[^\"]*\"$/version\/name=\"${version_name}\"/" export_presets.cfg
           grep -E '^version/(code|name)=' export_presets.cfg
@@ -357,7 +357,7 @@ jobs:
           build_dir = Path("build")
           manifest = {
               "channel": "pr-1",
-              "build": int(os.environ["GITHUB_RUN_NUMBER"]),
+              "build": int(os.environ["GITHUB_RUN_NUMBER"]) + 1,
               "commit": os.environ["GITHUB_SHA"],
           }
           for platform, filename in [
