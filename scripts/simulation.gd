@@ -183,6 +183,11 @@ var mobile_perf_tractor_us := 0
 var mobile_perf_mining_us := 0
 var mobile_perf_camera_us := 0
 var mobile_render_viewport := RID()
+# Passive mobile diagnostics. No updates to movement, physics, render behavior.
+# Keep frame-level results separate for idle, straight movement, and turning.
+var mobile_turn_phase := "idle"
+var mobile_turn_profiles: Dictionary = {}
+
 
 var mobile_joystick: VirtualJoystick
 var mobile_last_turn_sign := 1.0
@@ -1947,8 +1952,103 @@ func _notification(what: int) -> void:
             Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
+func _mobile_turn_profile(phase: String) -> Dictionary:
+    if not mobile_turn_profiles.has(phase):
+        mobile_turn_profiles[phase] = {
+            "frames": 0,
+            "elapsed": 0.0,
+            "slow": 0,
+            "worst": 0.0,
+            "engine_physics_ms": 0.0,
+            "engine_process_ms": 0.0,
+            "draws": 0,
+            "primitives": 0,
+            "ticks": 0,
+            "physics_us": 0,
+            "ship_us": 0,
+            "collision_us": 0,
+            "asteroids_us": 0,
+            "mining_us": 0,
+            "camera_us": 0,
+        }
+    return mobile_turn_profiles[phase] as Dictionary
+
+
+func _mobile_turn_profile_log() -> void:
+    for phase in ["idle", "straight", "turn"]:
+        if not mobile_turn_profiles.has(phase):
+            continue
+        var p := mobile_turn_profiles[phase] as Dictionary
+        var frames := int(p["frames"])
+        var ticks := int(p["ticks"])
+        var sample_frames := maxi(1, frames)
+        var sample_ticks := maxi(1, ticks)
+        AppLogger.event(
+            "MOBILE_TURN_PHASE phase=%s frames=%d fps=%.1f "
+            % [
+                phase,
+                frames,
+                float(frames) / maxf(0.001, float(p["elapsed"])),
+            ]
+            + "slow_frames_25ms=%d worst_frame_ms=%.2f "
+            % [int(p["slow"]), float(p["worst"])]
+            + "engine_process_avg_ms=%.2f engine_physics_avg_ms=%.2f "
+            % [
+                float(p["engine_process_ms"]) / float(sample_frames),
+                float(p["engine_physics_ms"]) / float(sample_frames),
+            ]
+            + "draws_avg=%.1f primitives_avg=%.1f "
+            % [
+                float(p["draws"]) / float(sample_frames),
+                float(p["primitives"]) / float(sample_frames),
+            ]
+            + "physics_ticks=%d script_physics_avg_ms=%.3f "
+            % [
+                ticks, float(p["physics_us"]) / float(sample_ticks) / 1000.0,
+            ]
+            + "ship_avg_ms=%.3f collision_avg_ms=%.3f asteroids_avg_ms=%.3f "
+            % [
+                float(p["ship_us"]) / float(sample_ticks) / 1000.0,
+                float(p["collision_us"]) / float(sample_ticks) / 1000.0,
+                float(p["asteroids_us"]) / float(sample_ticks) / 1000.0,
+            ]
+            + "mining_avg_ms=%.3f camera_avg_ms=%.3f "
+            % [
+                float(p["mining_us"]) / float(sample_ticks) / 1000.0,
+                float(p["camera_us"]) / float(sample_ticks) / 1000.0,
+            ]
+            + "nearby_asteroids=%d ship_shapes=%d"
+            % [nearby_mining_asteroids.size(), ship_collision_bindings.size()]
+        )
+    mobile_turn_profiles.clear()
+
+
 func _process(delta: float) -> void:
     if _is_mobile_platform() and not asteroid_loading_in_progress:
+        var phase_sample := _mobile_turn_profile(mobile_turn_phase)
+        var elapsed_ms := delta * 1000.0
+        phase_sample["frames"] = int(phase_sample["frames"]) + 1
+        phase_sample["elapsed"] = float(phase_sample["elapsed"]) + delta
+        if elapsed_ms >= 25.0:
+            phase_sample["slow"] = int(phase_sample["slow"]) + 1
+        phase_sample["worst"] = maxf(
+            float(phase_sample["worst"]), elapsed_ms
+        )
+        phase_sample["engine_physics_ms"] = (
+            float(phase_sample["engine_physics_ms"])
+            + _performance_monitor_ms(Performance.TIME_PHYSICS_PROCESS)
+        )
+        phase_sample["engine_process_ms"] = (
+            float(phase_sample["engine_process_ms"])
+            + _performance_monitor_ms(Performance.TIME_PROCESS)
+        )
+        phase_sample["draws"] = int(phase_sample["draws"]) + int(
+            Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)
+        )
+        phase_sample["primitives"] = int(phase_sample["primitives"]) + int(
+            Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)
+        )
+
         mobile_perf_elapsed += delta
         mobile_perf_frames += 1
         var mobile_frame_ms := delta * 1000.0
@@ -2015,6 +2115,7 @@ func _process(delta: float) -> void:
                     float(mobile_perf_camera_us) / tick_count / 1000.0,
                 ]
             )
+            _mobile_turn_profile_log()
             mobile_perf_elapsed = 0.0
             mobile_perf_frames = 0
             mobile_perf_slow_frames = 0
@@ -2155,6 +2256,15 @@ func _profile_mobile_physics(delta: float) -> void:
     mobile_perf_mining_us += mining_us
     mobile_perf_camera_us += camera_us
 
+    var profile := _mobile_turn_profile(mobile_turn_phase)
+    profile["ticks"] = int(profile["ticks"]) + 1
+    profile["physics_us"] = int(profile["physics_us"]) + total_us
+    profile["ship_us"] = int(profile["ship_us"]) + ship_us
+    profile["collision_us"] = int(profile["collision_us"]) + collision_us
+    profile["asteroids_us"] = int(profile["asteroids_us"]) + asteroid_us
+    profile["mining_us"] = int(profile["mining_us"]) + mining_us
+    profile["camera_us"] = int(profile["camera_us"]) + camera_us
+
     if performance_metrics_visible:
         _performance_record("script_physics_total", float(total_us) / 1000.0)
         _performance_record("collision_sync", float(collision_us) / 1000.0)
@@ -2206,6 +2316,19 @@ func _update_ship_motion(delta: float) -> void:
             # Once S is released, A/D immediately return to normal forward
             # propulsion even if the ship still has residual reverse momentum.
             throttle = absf(steer)
+
+    if _is_mobile_platform():
+        # Include residual yaw after the stick is released; this is the actual
+        # turning state that can trigger geometry and physics-server work.
+        if absf(steer) >= 0.10 or absf(yaw_rate) >= 0.05:
+            mobile_turn_phase = "turn"
+        elif (
+            absf(throttle) >= 0.10
+            or ship_body.velocity.length_squared() >= 0.10
+        ):
+            mobile_turn_phase = "straight"
+        else:
+            mobile_turn_phase = "idle"
 
     # Resolve inertial velocity along the actual thrust-defined hull axes.
     surge_speed = current_forward_speed
