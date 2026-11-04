@@ -3266,9 +3266,14 @@ func _claim_laser_mining_cell(
     var anchor := laser.get("anchor_cell", Vector3i.ZERO) as Vector3i
     var can_reach := func(position: Vector3) -> bool:
         return not _ship_blocks_segment(muzzle, position, anchor)
-    return asteroid.claim_mining_cell(
+    var claim := asteroid.claim_mining_cell(
         pivot.get_instance_id(), muzzle, can_reach
     )
+    if _is_mobile_platform():
+        mobile_mining_claim_calls += 1
+        if claim.is_empty():
+            mobile_mining_claim_failures += 1
+    return claim
 
 
 # Moving/turning the ship must not bypass a failed assignment's cooldown.
