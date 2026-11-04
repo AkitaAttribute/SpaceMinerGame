@@ -3276,6 +3276,23 @@ func _claim_laser_mining_cell(
     return claim
 
 
+func _prepare_laser_mining_cell(
+    asteroid: SpaceAsteroid,
+    cell: Vector3i
+) -> Dictionary:
+    var mobile := _is_mobile_platform()
+    var start_us := Time.get_ticks_usec() if mobile else 0
+    var prepared := asteroid.prepare_detach_cell(cell)
+    if mobile:
+        var elapsed_us := Time.get_ticks_usec() - start_us
+        mobile_mining_prepare_calls += 1
+        mobile_mining_prepare_us += elapsed_us
+        mobile_mining_prepare_max_us = maxi(
+            mobile_mining_prepare_max_us, elapsed_us
+        )
+    return prepared
+
+
 # Moving/turning the ship must not bypass a failed assignment's cooldown.
 # Other lasers claiming work does not create additional available jobs.
 func _mining_cell_retry_due(
