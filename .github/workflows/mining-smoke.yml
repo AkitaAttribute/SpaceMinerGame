@@ -53,3 +53,17 @@ jobs:
           timeout 30s godot --headless --path . --script res://tests/mining_retry_smoke.gd 2>&1 | tee /tmp/mining-retry.log
           grep -q MINING_RETRY_SMOKE_PASS /tmp/mining-retry.log
           if grep -E "SCRIPT ERROR:|Parse Error:|ERROR:" /tmp/mining-retry.log; then exit 1; fi
+      - name: Voxel-indexed laser occlusion parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s godot --headless --path . --script res://tests/mining_occlusion_index_smoke.gd 2>&1 | tee /tmp/mining-occlusion.log
+          grep -q MINING_OCCLUSION_SMOKE_PASS /tmp/mining-occlusion.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|ERROR:" /tmp/mining-occlusion.log; then exit 1; fi
+      - name: Asteroid optimizer dirty-notification regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 30s godot --headless --path . --script res://tests/asteroid_dirty_smoke.gd 2>&1 | tee /tmp/asteroid-dirty.log
+          grep -q ASTEROID_DIRTY_SMOKE_PASS /tmp/asteroid-dirty.log
+          if grep -E "SCRIPT ERROR:|Parse Error:|ERROR:" /tmp/asteroid-dirty.log; then exit 1; fi
