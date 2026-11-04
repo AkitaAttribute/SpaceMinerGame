@@ -226,6 +226,12 @@ func _ready() -> void:
     asteroid_rng.randomize()
     _build_ui()
     if _is_mobile_platform():
+        # Diagnostic branch only: temporary reversible A/B subsystem tests.
+        var regression_probe: Node = preload(
+            "res://scripts/travel_regression_probe.gd"
+        ).new()
+        regression_probe.name = "TravelRegressionProbe"
+        add_child(regression_probe)
         mobile_render_viewport = get_viewport().get_viewport_rid()
         if mobile_render_viewport.is_valid():
             RenderingServer.viewport_set_measure_render_time(
@@ -746,6 +752,8 @@ func _append_ship_collision_meshes(node: Node) -> void:
 
 
 func _sync_ship_collision_transforms() -> void:
+    if bool(get_meta("travel_probe_skip_collision_sync", false)):
+        return
     if ship_body == null or not is_instance_valid(ship_body):
         return
 
@@ -3338,6 +3346,8 @@ func _mining_cell_retry_due(
 
 
 func _update_mining_lasers(delta: float) -> void:
+    if bool(get_meta("travel_probe_skip_mining", false)):
+        return
     beam_time += delta
 
     for laser_index in range(mining_lasers.size()):
