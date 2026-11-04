@@ -1,5 +1,6 @@
 {
-  "url": "https://pastebin.ai/p/GTGBEEEAi",
-  "status": "requested",
-  "requested_at": "2026-11-04"
+  "url": "",
+  "status": "read_cleanup_requested",
+  "last_relay_run_id": 41869161958,
+  "validation": "Analyzed November 4 turning regression; identified muzzle-motion cooldown bypass, repeated surface scans, and active-mining physics spikes"
 }
