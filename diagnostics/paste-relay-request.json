@@ -1,5 +1,6 @@
 {
-  "url": "https://pastebin.ai/p/MCuKUXmyY",
-  "status": "requested",
-  "requested_at": "2026-11-04"
+  "url": "",
+  "status": "read_cleanup_requested",
+  "last_relay_run_id": 41928999899,
+  "validation": "Complete 216358-byte, 744-line build-492 diagnostic preserved in current chat; 21 FPS intervals all >=59.6; proximity scan mean 0.943ms"
 }
